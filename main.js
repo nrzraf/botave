@@ -1,10 +1,26 @@
+// Polyfill untuk Web APIs (Node.js v18/v20 compatibility)
+const { Blob, File } = require('buffer');
+const { fetch, Headers, Request, Response, FormData } = require('undici');
+
+if (!globalThis.File) globalThis.File = File;
+if (!globalThis.Blob) globalThis.Blob = Blob;
+if (!globalThis.FormData) globalThis.FormData = FormData;
+if (!globalThis.fetch) {
+    globalThis.fetch = fetch;
+    globalThis.Headers = Headers;
+    globalThis.Request = Request;
+    globalThis.Response = Response;
+}
+
 const { Client } = require('discord.js-selfbot-v13');
 const { 
     joinVoiceChannel, 
     getVoiceConnection, 
     createAudioPlayer, 
     createAudioResource, 
-    AudioPlayerStatus 
+    AudioPlayerStatus,
+    VoiceConnectionStatus,
+    entersState
 } = require('@discordjs/voice');
 const ytdl = require('@distube/ytdl-core');
 const play = require('play-dl');
@@ -15,16 +31,60 @@ const PREFIX = 'ave';
 const TOKEN = process.env.DISCORD_TOKEN;
 const SUPER_OWNER = process.env.SUPER_OWNER || 'ID_DISCORD_KAMU';
 
-let owners = new Set([SUPER_OWNER]);
+if (!TOKEN) {
+    console.error("ERROR: DISCORD_TOKEN tidak ditemukan di Environment Variables!");
+    process.exit(1);
+}
 
-// Queue storage per server
+let owners = new Set([SUPER_OWNER]);
 const queues = new Map();
 
-client.on('ready', () => {
-    console.log(`Logged in as ${client.user.tag}!`);
-});
+// Variabel Penyimpan Voice Channel Aktif untuk Auto-Rejoin Loop
+let activeVoiceChannel = null;
 
-// Fungsi untuk memutar lagu berikutnya di antrean
+// ==========================================
+// AUTO REJOIN LOOP (Pencegah Disconnect)
+// ==========================================
+setInterval(() => {
+    if (!activeVoiceChannel) return;
+
+    const currentConnection = getVoiceConnection(activeVoiceChannel.guild.id);
+    
+    // Jika koneksi terputus atau tidak ada, paksa rejoin ke channel terakhir
+    if (!currentConnection || currentConnection.state.status === VoiceConnectionStatus.Destroyed) {
+        console.log(`Auto-Rejoin: Menghubungkan kembali ke ${activeVoiceChannel.name}...`);
+        connectToVoice(activeVoiceChannel);
+    }
+}, 15000); // Mengecek dan memastikan bot tetap di voice setiap 15 detik
+
+// Fungsi koneksi Voice Channel dengan handler pemulihan
+function connectToVoice(channel) {
+    activeVoiceChannel = channel;
+
+    const connection = joinVoiceChannel({
+        channelId: channel.id,
+        guildId: channel.guild.id,
+        adapterCreator: channel.guild.voiceAdapterCreator,
+        selfMute: false,
+        selfDeaf: false
+    });
+
+    connection.on(VoiceConnectionStatus.Disconnected, async () => {
+        try {
+            await Promise.race([
+                entersState(connection, VoiceConnectionStatus.Signalling, 5000),
+                entersState(connection, VoiceConnectionStatus.Connecting, 5000),
+            ]);
+        } catch (error) {
+            console.log('Koneksi terputus, membersihkan koneksi lama...');
+            try { connection.destroy(); } catch (e) {}
+        }
+    });
+
+    return connection;
+}
+
+// Fungsi memutar lagu
 async function playSong(guildId) {
     const queue = queues.get(guildId);
     if (!queue) return;
@@ -49,12 +109,16 @@ async function playSong(guildId) {
 
         queue.textChannel.send(`Playing: **${currentSong.title}**`);
     } catch (error) {
-        console.error(error);
+        console.error('Error streaming song:', error);
         queue.textChannel.send(`Gagal memutar lagu: **${currentSong.title}**`);
         queue.songs.shift();
         playSong(guildId);
     }
 }
+
+client.on('ready', () => {
+    console.log(`Logged in as ${client.user.tag}! Auto-Rejoin Active.`);
+});
 
 client.on('messageCreate', async (message) => {
     if (!message.content.startsWith(PREFIX) || message.author.bot) return;
@@ -83,7 +147,6 @@ client.on('messageCreate', async (message) => {
 • \`${PREFIX}stop\` - Menghentikan lagu & membersihkan antrean.
 • \`${PREFIX}remove <nomor>\` - Menghapus lagu tertentu dari queue.
 • \`${PREFIX}loop\` / \`${PREFIX}loop queue\` - Toggle loop lagu aktif / loop queue.
-• \`${PREFIX}autoplay\` - Toggle rekomendasi lagu otomatis.
 • \`${PREFIX}shuffle\` - Mengacak urutan lagu di queue.
 • \`${PREFIX}help\` - Menampilkan daftar perintah ini.
         `;
@@ -101,7 +164,7 @@ client.on('messageCreate', async (message) => {
 
         const currentConnection = getVoiceConnection(message.guild.id);
 
-        if (currentConnection) {
+        if (currentConnection && currentConnection.state.status !== VoiceConnectionStatus.Destroyed) {
             const currentChannelId = currentConnection.joinConfig.channelId;
 
             if (currentChannelId === userVoiceChannel.id) {
@@ -113,14 +176,7 @@ client.on('messageCreate', async (message) => {
             }
         }
 
-        const connection = joinVoiceChannel({
-            channelId: userVoiceChannel.id,
-            guildId: message.guild.id,
-            adapterCreator: message.guild.voiceAdapterCreator,
-            selfMute: false,
-            selfDeaf: false, // Set false agar tidak deafen di awal
-        });
-
+        connectToVoice(userVoiceChannel);
         return message.reply(`Berhasil bergabung ke Voice Channel: **${userVoiceChannel.name}**`);
     }
 
@@ -129,12 +185,12 @@ client.on('messageCreate', async (message) => {
             return message.reply('Hanya Owner yang bisa mengeluarkan bot dari Voice Channel!');
         }
 
+        activeVoiceChannel = null; // Matikan Auto-Rejoin saat di-leave manual oleh Owner
         const currentConnection = getVoiceConnection(message.guild.id);
-        if (!currentConnection) {
-            return message.reply('Bot sedang tidak berada di Voice Channel mana pun.');
+        
+        if (currentConnection) {
+            try { currentConnection.destroy(); } catch (e) {}
         }
-
-        currentConnection.destroy();
         queues.delete(message.guild.id);
         return message.reply('Bot telah keluar dari Voice Channel.');
     }
@@ -154,14 +210,8 @@ client.on('messageCreate', async (message) => {
         }
 
         let connection = getVoiceConnection(message.guild.id);
-        if (!connection) {
-            connection = joinVoiceChannel({
-                channelId: userVoiceChannel.id,
-                guildId: message.guild.id,
-                adapterCreator: message.guild.voiceAdapterCreator,
-                selfMute: false,
-                selfDeaf: false
-            });
+        if (!connection || connection.state.status === VoiceConnectionStatus.Destroyed) {
+            connection = connectToVoice(userVoiceChannel);
         }
 
         message.reply(`Mencari lagu: **${query}**...`);
@@ -195,7 +245,6 @@ client.on('messageCreate', async (message) => {
                 queues.set(message.guild.id, queue);
                 queue.songs.push(songInfo);
 
-                // Event ketika lagu selesai
                 player.on(AudioPlayerStatus.Idle, () => {
                     const currentQueue = queues.get(message.guild.id);
                     if (!currentQueue) return;
@@ -245,7 +294,7 @@ client.on('messageCreate', async (message) => {
         if (!queue || queue.songs.length === 0) return message.reply('Tidak ada lagu untuk di-skip.');
 
         message.reply('Skipped track.');
-        queue.player.stop(); // Mentriggers AudioPlayerStatus.Idle untuk memutar lagu selanjutnya
+        queue.player.stop();
     }
 
     if (command === 'stop') {
@@ -321,4 +370,6 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-client.login(TOKEN);
+client.login(TOKEN).catch((err) => {
+    console.error("Gagal Login. Periksa kembali DISCORD_TOKEN di Environment Variables.");
+});
