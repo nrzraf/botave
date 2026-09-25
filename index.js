@@ -12,18 +12,7 @@ if (!globalThis.fetch) {
     globalThis.Response = Response;
 }
 
-// --- PATCH DISCORD.JS-SELFBOT-V13 FRIEND_SOURCE_FLAGS NULL ERROR ---
-const ClientUserSettingManager = require('discord.js-selfbot-v13/src/managers/ClientUserSettingManager');
-const originalPatch = ClientUserSettingManager.prototype._patch;
-
-ClientUserSettingManager.prototype._patch = function (data) {
-    if (data && data.friend_source_flags === null) {
-        data.friend_source_flags = { all: false, mutual_friends: false, mutual_guilds: false };
-    }
-    return originalPatch.call(this, data);
-};
-// --------------------------------------------------------------------
-
+// 1. Muat module utama terlebih dahulu untuk mencegah circular dependency crash
 const { Client } = require('discord.js-selfbot-v13');
 const { 
     joinVoiceChannel, 
@@ -36,6 +25,17 @@ const {
 } = require('@discordjs/voice');
 const ytdl = require('@distube/ytdl-core');
 const play = require('play-dl');
+
+// 2. Terapkan Monkeypatch setelah Base Structure ter-load sempurna
+const ClientUserSettingManager = require('discord.js-selfbot-v13/src/managers/ClientUserSettingManager');
+const originalPatch = ClientUserSettingManager.prototype._patch;
+
+ClientUserSettingManager.prototype._patch = function (data) {
+    if (data && data.friend_source_flags === null) {
+        data.friend_source_flags = { all: false, mutual_friends: false, mutual_guilds: false };
+    }
+    return originalPatch.call(this, data);
+};
 
 const client = new Client();
 const PREFIX = 'ave';
