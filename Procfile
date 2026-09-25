@@ -1,1 +1,1 @@
-worker: node main.js
+worker: python main.py
