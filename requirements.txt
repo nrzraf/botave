@@ -1,5 +1,0 @@
-discord.py-self==2.0.0
-audioop-lts
-yt-dlp
-PyNaCl
-FFmpeg-python
