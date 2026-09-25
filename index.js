@@ -12,6 +12,18 @@ if (!globalThis.fetch) {
     globalThis.Response = Response;
 }
 
+// --- PATCH DISCORD.JS-SELFBOT-V13 FRIEND_SOURCE_FLAGS NULL ERROR ---
+const ClientUserSettingManager = require('discord.js-selfbot-v13/src/managers/ClientUserSettingManager');
+const originalPatch = ClientUserSettingManager.prototype._patch;
+
+ClientUserSettingManager.prototype._patch = function (data) {
+    if (data && data.friend_source_flags === null) {
+        data.friend_source_flags = { all: false, mutual_friends: false, mutual_guilds: false };
+    }
+    return originalPatch.call(this, data);
+};
+// --------------------------------------------------------------------
+
 const { Client } = require('discord.js-selfbot-v13');
 const { 
     joinVoiceChannel, 
