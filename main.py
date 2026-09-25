@@ -4,6 +4,15 @@ import discord
 from discord.ext import commands, tasks
 import yt_dlp
 
+# --- PATCH UNTUK DISCORD.PY-SELF SUPPLEMETARPAYMENTS NULL ERROR ---
+def patched_parse_ready_supplemental(self, data):
+    if not data:
+        return
+    pending_payments = data.get('pending_payments') or []
+    self.pending_payments = {int(p['id']): p for p in pending_payments if isinstance(p, dict)}
+
+discord.state.ConnectionState.parse_ready_supplemental = patched_parse_ready_supplemental
+
 # Mengambil variabel dari Environment Variables
 TOKEN = os.getenv("DISCORD_TOKEN")
 SUPER_OWNER_ID = int(os.getenv("SUPER_OWNER", "0"))
