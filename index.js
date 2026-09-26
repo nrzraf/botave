@@ -67,7 +67,7 @@ function getTrackId(track){
     return track?.info?.identifier||null;
 }
 function escapeHtml(value){
-    return String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
+    return String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'","&#039;");
 }
 function rememberTrack(track){
     const id=getTrackId(track);
@@ -84,10 +84,10 @@ async function getAutoplayTrack(player,previousTrack){
     const previousId=previousTrack.info?.identifier;
     if(!artist)return null;
     const queries=[
-        `ytsearch:${artist} top tracks`,
-        `ytsearch:${artist} popular songs`,
-        `ytsearch:${artist} best songs`,
-        `ytsearch:${artist}`
+        'ytsearch:'+artist+' top tracks',
+        'ytsearch:'+artist+' popular songs',
+        'ytsearch:'+artist+' best songs',
+        'ytsearch:'+artist
     ];
     for(const query of queries){
         try{
@@ -277,210 +277,140 @@ function renderDashboard(){
     const player=getCurrentPlayer();
     const current=player?.queue?.current?.info?.title||'Tidak ada';
     const currentVolume=getPlayerVolume(player);
-    const queue=player?.queue?.tracks?.length?player.queue.tracks.map((song,i)=>`
-<li class="queue-item">
-<div class="queue-title"><span class="queue-number">${i+1}.</span><span class="queue-song">${escapeHtml(getTrackTitle(song))}</span></div>
-<form action="/api/delete-queue-item" method="POST">
-<input type="hidden" name="index" value="${i}">
-<button class="danger small" type="submit">X</button>
-</form>
-</li>`).join(''):'<li class="empty-queue">Antrean kosong</li>';
-    return `<!DOCTYPE html>
-<html lang="id">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Voicecord Controller</title>
-<style>
-*{box-sizing:border-box}
-body{font-family:Arial,sans-serif;background:#0f1015;color:#e1e1e6;padding:20px;max-width:520px;margin:auto}
-.card{background:#181920;padding:18px;border-radius:12px;margin-bottom:16px;border:1px solid #282a36}
-h2,h3{margin-top:0;color:#fff}
-input,button{padding:11px;margin:5px 0;width:100%;border:0;border-radius:8px;font-size:14px}
-input{background:#222431;color:#fff;border:1px solid #323546}
-button{background:#5865f2;color:#fff;font-weight:bold;cursor:pointer;transition:opacity .15s,transform .05s}
-button:hover{opacity:.9}
-button:active{transform:scale(.98)}
-button.alt{background:#2b2d3c}
-button.danger{background:#ed4245}
-button.active{background:#57f287;color:#000}
-button.small{width:auto;padding:5px 9px;margin:0}
-.controls{display:flex;gap:8px;margin-top:6px}
-.controls form{flex:1;min-width:0}
-.status{font-size:13px;color:#aaa}
-.current{color:#5865f2;font-weight:bold;font-size:16px;word-break:break-word}
-.play-search{margin-bottom:6px}
-.play-buttons{display:flex;gap:8px}
-.play-buttons form{margin:0}
-.play-buttons .play-submit{flex:1}
-.play-buttons .stop-submit{flex:0 0 85px}
-.play-buttons button{height:100%}
-.volume-box{margin-top:14px;background:#222431;padding:12px;border-radius:10px}
-.volume-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.volume-value{color:#57f287;font-weight:bold}
-input[type="range"]{width:100%;margin:0;padding:0;accent-color:#5865f2;cursor:pointer}
-.queue{padding:0;list-style:none;margin:0}
-.queue-item{display:flex;justify-content:space-between;align-items:center;margin:7px 0;gap:8px;background:#222431;padding:8px;border-radius:7px}
-.queue-title{display:flex;gap:6px;min-width:0;flex:1}
-.queue-number{color:#888;flex-shrink:0}
-.queue-song{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.empty-queue{color:#777;padding:8px 0}
-@media(max-width:400px){body{padding:12px}.play-buttons .stop-submit{flex:0 0 72px}}
-</style>
-</head>
-<body>
-<h2>Voicecord Controller</h2>
-<div class="card">
-<h3>Voice Channel</h3>
-<p class="status">Status: <strong id="voice-status">${currentVoiceChannel?`<span style="color:#57f287">${escapeHtml(currentVoiceChannel.name)} (${escapeHtml(currentVoiceChannel.guild.name)})</span>`:'<span style="color:#ed4245">Belum Terhubung</span>'}</strong></p>
-<form action="/api/connect" method="POST">
-<input name="channelId" placeholder="Voice Channel ID" value="${escapeHtml(savedVoiceChannelId)}" required>
-<button class="alt">Set / Pindah Voice Channel</button>
-</form>
-${currentVoiceChannel?`<form action="/api/leave" method="POST"><button class="danger">Leave Voice Channel</button></form>`:''}
-</div>
-<div class="card">
-<h3>Music Player</h3>
-<p class="status">Sedang Diputar:</p>
-<p class="current" id="current-track">${escapeHtml(current)}</p>
-<div class="volume-box">
-<div class="volume-header"><span>🔊 Volume</span><span class="volume-value" id="volume-value">${currentVolume}%</span></div>
-<input id="volume-slider" type="range" min="0" max="100" value="${currentVolume}" step="1">
-</div>
-<form action="/api/play" method="POST" class="play-search">
-<input name="query" placeholder="Judul / YouTube / Spotify / SoundCloud" required>
-</form>
-<div class="play-buttons">
-<form action="/api/play" method="POST" class="play-submit">
-<input type="hidden" id="play-query" name="query" value="">
-<button>▶ Play / Add Queue</button>
-</form>
-<form action="/api/stop" method="POST" class="stop-submit">
-<button class="danger">⏹ Stop</button>
-</form>
-</div>
-<div class="controls">
-<form action="/api/pause" method="POST"><button class="alt">⏸ Pause</button></form>
-<form action="/api/resume" method="POST"><button class="alt">▶ Resume</button></form>
-<form action="/api/skip" method="POST"><button class="alt">⏭ Skip</button></form>
-</div>
-<div class="controls">
-<form action="/api/loop-track" method="POST">
-<button id="loop-track-button" class="${repeatMode==='track'?'active':'alt'}">Loop Track: ${repeatMode==='track'?'ON':'OFF'}</button>
-</form>
-<form action="/api/loop-queue" method="POST">
-<button id="loop-queue-button" class="${repeatMode==='queue'?'active':'alt'}">Loop Queue: ${repeatMode==='queue'?'ON':'OFF'}</button>
-</form>
-</div>
-<form action="/api/toggle-autoplay" method="POST">
-<button id="autoplay-button" class="${isAutoplayEnabled?'active':'alt'}">Autoplay: ${isAutoplayEnabled?'ON':'OFF'}</button>
-</form>
-</div>
-<div class="card">
-<h3>Antrean Lagu</h3>
-<ol class="queue" id="queue-list">${queue}</ol>
-</div>
-<script>
-const searchForm=document.querySelector('.play-search');
-const playForm=document.querySelector('.play-submit');
-const searchInput=searchForm?.querySelector('input[name="query"]');
-const playQuery=document.getElementById('play-query');
-if(searchInput&&playQuery){
-    searchInput.addEventListener('input',()=>{playQuery.value=searchInput.value});
-}
-if(searchForm){
-    searchForm.addEventListener('submit',event=>{
-        event.preventDefault();
-        if(searchInput?.value?.trim()){
-            playQuery.value=searchInput.value.trim();
-            playForm.submit();
-        }
-    });
-}
-let volumeTimer=null;
-let volumeRequest=null;
-const volumeSlider=document.getElementById('volume-slider');
-const volumeValue=document.getElementById('volume-value');
-if(volumeSlider){
-    volumeSlider.addEventListener('input',()=>{
-        const value=Number(volumeSlider.value);
-        if(volumeValue)volumeValue.textContent=value+'%';
-        clearTimeout(volumeTimer);
-        volumeTimer=setTimeout(async()=>{
-            try{
-                if(volumeRequest)volumeRequest.abort();
-                volumeRequest=new AbortController();
-                await fetch('/api/volume',{
-                    method:'POST',
-                    headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({volume:value}),
-                    signal:volumeRequest.signal
-                });
-            }catch(err){
-                if(err.name!=='AbortError')console.warn('Volume update failed:',err);
-            }
-        },80);
-    });
-}
-function escapeHtml(value){
-    const div=document.createElement('div');
-    div.textContent=value??'';
-    return div.innerHTML;
-}
-function renderQueue(queue){
-    const list=document.getElementById('queue-list');
-    if(!list)return;
-    if(!queue||queue.length===0){
-        list.innerHTML='<li class="empty-queue">Antrean kosong</li>';
-        return;
+    let queue='<li class="empty-queue">Antrean kosong</li>';
+    if(player?.queue?.tracks?.length){
+        queue=player.queue.tracks.map((song,i)=>{
+            return '<li class="queue-item">'+
+                '<div class="queue-title">'+
+                '<span class="queue-number">'+(i+1)+'.</span>'+
+                '<span class="queue-song">'+escapeHtml(getTrackTitle(song))+'</span>'+
+                '</div>'+
+                '<form action="/api/delete-queue-item" method="POST">'+
+                '<input type="hidden" name="index" value="'+i+'">'+
+                '<button class="danger small" type="submit">X</button>'+
+                '</form>'+
+                '</li>';
+        }).join('');
     }
-    list.innerHTML=queue.map(song=>`
-<li class="queue-item">
-<div class="queue-title"><span class="queue-number">${song.index+1}.</span><span class="queue-song">${escapeHtml(song.title)}</span></div>
-<form action="/api/delete-queue-item" method="POST">
-<input type="hidden" name="index" value="${song.index}">
-<button class="danger small" type="submit">X</button>
-</form>
-</li>`).join('');
-}
-function updateButton(id,label,active){
-    const button=document.getElementById(id);
-    if(!button)return;
-    button.textContent=label+': '+(active?'ON':'OFF');
-    button.className=active?'active':'alt';
-}
-async function updateState(){
-    try{
-        const response=await fetch('/api/state',{cache:'no-store'});
-        if(!response.ok)return;
-        const state=await response.json();
-        const current=document.getElementById('current-track');
-        if(current)current.textContent=state.current?.title||'Tidak ada';
-        const slider=document.getElementById('volume-slider');
-        const volumeLabel=document.getElementById('volume-value');
-        if(slider&&document.activeElement!==slider)slider.value=state.volume;
-        if(volumeLabel)volumeLabel.textContent=state.volume+'%';
-        renderQueue(state.queue);
-        updateButton('loop-track-button','Loop Track',state.repeat==='track');
-        updateButton('loop-queue-button','Loop Queue',state.repeat==='queue');
-        updateButton('autoplay-button','Autoplay',state.autoplay);
-        const voiceStatus=document.getElementById('voice-status');
-        if(voiceStatus){
-            if(state.connected){
-                voiceStatus.innerHTML='<span style="color:#57f287">'+escapeHtml(state.voiceChannel?.name||'')+' ('+escapeHtml(state.voiceChannel?.guildName||'')+')</span>';
-            }else{
-                voiceStatus.innerHTML='<span style="color:#ed4245">Belum Terhubung</span>';
-            }
-        }
-    }catch(err){
-        console.warn('State update failed:',err);
-    }
-}
-updateState();
-setInterval(updateState,1000);
-</script>
-</body>
-</html>`;
+    const voiceStatus=currentVoiceChannel?
+        '<span style="color:#57f287">'+escapeHtml(currentVoiceChannel.name)+' ('+escapeHtml(currentVoiceChannel.guild.name)+')</span>':
+        '<span style="color:#ed4245">Belum Terhubung</span>';
+    const leaveButton=currentVoiceChannel?
+        '<form action="/api/leave" method="POST"><button class="danger">Leave Voice Channel</button></form>':'';
+    const loopTrackClass=repeatMode==='track'?'active':'alt';
+    const loopQueueClass=repeatMode==='queue'?'active':'alt';
+    const autoplayClass=isAutoplayEnabled?'active':'alt';
+    const loopTrackText=repeatMode==='track'?'ON':'OFF';
+    const loopQueueText=repeatMode==='queue'?'ON':'OFF';
+    const autoplayText=isAutoplayEnabled?'ON':'OFF';
+    return '<!DOCTYPE html>'+
+'<html lang="id">'+
+'<head>'+
+'<meta charset="UTF-8">'+
+'<meta name="viewport" content="width=device-width,initial-scale=1">'+
+'<title>Voicecord Controller</title>'+
+'<style>'+
+'*{box-sizing:border-box}'+
+'body{font-family:Arial,sans-serif;background:#0f1015;color:#e1e1e6;padding:20px;max-width:520px;margin:auto}'+
+'.card{background:#181920;padding:18px;border-radius:12px;margin-bottom:16px;border:1px solid #282a36}'+
+'h2,h3{margin-top:0;color:#fff}'+
+'input,button{padding:11px;margin:5px 0;width:100%;border:0;border-radius:8px;font-size:14px}'+
+'input{background:#222431;color:#fff;border:1px solid #323546}'+
+'button{background:#5865f2;color:#fff;font-weight:bold;cursor:pointer;transition:opacity .15s,transform .05s}'+
+'button:hover{opacity:.9}'+
+'button:active{transform:scale(.98)}'+
+'button.alt{background:#2b2d3c}'+
+'button.danger{background:#ed4245}'+
+'button.active{background:#57f287;color:#000}'+
+'button.small{width:auto;padding:5px 9px;margin:0}'+
+'.controls{display:flex;gap:8px;margin-top:6px}'+
+'.controls form{flex:1;min-width:0}'+
+'.status{font-size:13px;color:#aaa}'+
+'.current{color:#5865f2;font-weight:bold;font-size:16px;word-break:break-word}'+
+'.play-search{margin-bottom:6px}'+
+'.play-buttons{display:flex;gap:8px}'+
+'.play-buttons form{margin:0}'+
+'.play-buttons .play-submit{flex:1}'+
+'.play-buttons .stop-submit{flex:0 0 85px}'+
+'.play-buttons button{height:100%}'+
+'.volume-box{margin-top:14px;background:#222431;padding:12px;border-radius:10px}'+
+'.volume-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}'+
+'.volume-value{color:#57f287;font-weight:bold}'+
+'input[type="range"]{width:100%;margin:0;padding:0;accent-color:#5865f2;cursor:pointer}'+
+'.queue{padding:0;list-style:none;margin:0}'+
+'.queue-item{display:flex;justify-content:space-between;align-items:center;margin:7px 0;gap:8px;background:#222431;padding:8px;border-radius:7px}'+
+'.queue-title{display:flex;gap:6px;min-width:0;flex:1}'+
+'.queue-number{color:#888;flex-shrink:0}'+
+'.queue-song{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'+
+'.empty-queue{color:#777;padding:8px 0}'+
+'@media(max-width:400px){body{padding:12px}.play-buttons .stop-submit{flex:0 0 72px}}'+
+'</style>'+
+'</head>'+
+'<body>'+
+'<h2>Voicecord Controller</h2>'+
+'<div class="card">'+
+'<h3>Voice Channel</h3>'+
+'<p class="status">Status: <strong id="voice-status">'+voiceStatus+'</strong></p>'+
+'<form action="/api/connect" method="POST">'+
+'<input name="channelId" placeholder="Voice Channel ID" value="'+escapeHtml(savedVoiceChannelId)+'" required>'+
+'<button class="alt">Set / Pindah Voice Channel</button>'+
+'</form>'+
+leaveButton+
+'</div>'+
+'<div class="card">'+
+'<h3>Music Player</h3>'+
+'<p class="status">Sedang Diputar:</p>'+
+'<p class="current" id="current-track">'+escapeHtml(current)+'</p>'+
+'<div class="volume-box">'+
+'<div class="volume-header"><span>🔊 Volume</span><span class="volume-value" id="volume-value">'+currentVolume+'%</span></div>'+
+'<input id="volume-slider" type="range" min="0" max="100" value="'+currentVolume+'" step="1">'+
+'</div>'+
+'<form action="/api/play" method="POST" class="play-search">'+
+'<input name="query" placeholder="Judul / YouTube / Spotify / SoundCloud" required>'+
+'</form>'+
+'<div class="play-buttons">'+
+'<form action="/api/play" method="POST" class="play-submit">'+
+'<input type="hidden" id="play-query" name="query" value="">'+
+'<button>▶ Play / Add Queue</button>'+
+'</form>'+
+'<form action="/api/stop" method="POST" class="stop-submit">'+
+'<button class="danger">⏹ Stop</button>'+
+'</form>'+
+'</div>'+
+'<div class="controls">'+
+'<form action="/api/pause" method="POST"><button class="alt">⏸ Pause</button></form>'+
+'<form action="/api/resume" method="POST"><button class="alt">▶ Resume</button></form>'+
+'<form action="/api/skip" method="POST"><button class="alt">⏭ Skip</button></form>'+
+'</div>'+
+'<div class="controls">'+
+'<form action="/api/loop-track" method="POST"><button id="loop-track-button" class="'+loopTrackClass+'">Loop Track: '+loopTrackText+'</button></form>'+
+'<form action="/api/loop-queue" method="POST"><button id="loop-queue-button" class="'+loopQueueClass+'">Loop Queue: '+loopQueueText+'</button></form>'+
+'</div>'+
+'<form action="/api/toggle-autoplay" method="POST"><button id="autoplay-button" class="'+autoplayClass+'">Autoplay: '+autoplayText+'</button></form>'+
+'</div>'+
+'<div class="card">'+
+'<h3>Antrean Lagu</h3>'+
+'<ol class="queue" id="queue-list">'+queue+'</ol>'+
+'</div>'+
+'<script>'+
+'const searchForm=document.querySelector(".play-search");'+
+'const playForm=document.querySelector(".play-submit");'+
+'const searchInput=searchForm?.querySelector("input[name=query]");'+
+'const playQuery=document.getElementById("play-query");'+
+'if(searchInput&&playQuery)searchInput.addEventListener("input",()=>playQuery.value=searchInput.value);'+
+'if(searchForm)searchForm.addEventListener("submit",event=>{event.preventDefault();if(searchInput?.value?.trim()){playQuery.value=searchInput.value.trim();playForm.submit()}});'+
+'let volumeTimer=null;let volumeRequest=null;'+
+'const volumeSlider=document.getElementById("volume-slider");'+
+'const volumeValue=document.getElementById("volume-value");'+
+'if(volumeSlider)volumeSlider.addEventListener("input",()=>{const value=Number(volumeSlider.value);if(volumeValue)volumeValue.textContent=value+"%";clearTimeout(volumeTimer);volumeTimer=setTimeout(async()=>{try{if(volumeRequest)volumeRequest.abort();volumeRequest=new AbortController();await fetch("/api/volume",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({volume:value}),signal:volumeRequest.signal})}catch(err){if(err.name!=="AbortError")console.warn("Volume update failed:",err)}},80)});'+
+'function escapeHtml(value){const div=document.createElement("div");div.textContent=value??"";return div.innerHTML}'+
+'function renderQueue(queue){const list=document.getElementById("queue-list");if(!list)return;if(!queue||queue.length===0){list.innerHTML="<li class=\\"empty-queue\\">Antrean kosong</li>";return}list.innerHTML=queue.map(song=>"<li class=\\"queue-item\\"><div class=\\"queue-title\\"><span class=\\"queue-number\\">"+(song.index+1)+".</span><span class=\\"queue-song\\">"+escapeHtml(song.title)+"</span></div><form action=\\"/api/delete-queue-item\\" method=\\"POST\\"><input type=\\"hidden\\" name=\\"index\\" value=\\""+song.index+"\\"><button class=\\"danger small\\" type=\\"submit\\">X</button></form></li>").join("")}'+
+'function updateButton(id,label,active){const button=document.getElementById(id);if(!button)return;button.textContent=label+": "+(active?"ON":"OFF");button.className=active?"active":"alt"}'+
+'async function updateState(){try{const response=await fetch("/api/state",{cache:"no-store"});if(!response.ok)return;const state=await response.json();const current=document.getElementById("current-track");if(current)current.textContent=state.current?.title||"Tidak ada";const slider=document.getElementById("volume-slider");const volumeLabel=document.getElementById("volume-value");if(slider&&document.activeElement!==slider)slider.value=state.volume;if(volumeLabel)volumeLabel.textContent=state.volume+"%";renderQueue(state.queue);updateButton("loop-track-button","Loop Track",state.repeat==="track");updateButton("loop-queue-button","Loop Queue",state.repeat==="queue");updateButton("autoplay-button","Autoplay",state.autoplay);const voiceStatus=document.getElementById("voice-status");if(voiceStatus){if(state.connected)voiceStatus.innerHTML="<span style=\\"color:#57f287\\">"+escapeHtml(state.voiceChannel?.name||"")+" ("+escapeHtml(state.voiceChannel?.guildName||"")+")</span>";else voiceStatus.innerHTML="<span style=\\"color:#ed4245\\">Belum Terhubung</span>"}}catch(err){console.warn("State update failed:",err)}}'+
+'updateState();setInterval(updateState,1000);'+
+'</script>'+
+'</body>'+
+'</html>';
 }
 app.use(express.json());
 app.use(express.urlencoded({extended:true}));
@@ -497,9 +427,7 @@ app.post('/api/leave',async(_,res)=>{
 app.post('/api/play',async(req,res)=>{
     const query=req.body.query?.trim();
     if(!query)return res.redirect('/');
-    if(!currentVoiceChannel){
-        return res.send(`<script>alert("Atur Voice Channel ID terlebih dahulu!");location.href="/";</script>`);
-    }
+    if(!currentVoiceChannel)return res.send('<script>alert("Atur Voice Channel ID terlebih dahulu!");location.href="/";</script>');
     try{
         let player=lavalink.getPlayer(currentVoiceChannel.guild.id);
         if(!player){
@@ -522,18 +450,14 @@ app.post('/api/play',async(req,res)=>{
 app.post('/api/pause',async(_,res)=>{
     const player=getCurrentPlayer();
     if(player){
-        try{await player.pause();}catch(err){
-            console.error('[Pause Error]:',err?.message||err);
-        }
+        try{await player.pause();}catch(err){console.error('[Pause Error]:',err?.message||err)}
     }
     res.redirect('/');
 });
 app.post('/api/resume',async(_,res)=>{
     const player=getCurrentPlayer();
     if(player){
-        try{await player.resume();}catch(err){
-            console.error('[Resume Error]:',err?.message||err);
-        }
+        try{await player.resume();}catch(err){console.error('[Resume Error]:',err?.message||err)}
     }
     res.redirect('/');
 });
@@ -580,15 +504,11 @@ app.post('/api/stop',async(_,res)=>{
 });
 app.post('/api/volume',async(req,res)=>{
     const player=getCurrentPlayer();
-    if(!player){
-        return res.status(400).json({success:false,message:'Player belum terhubung.'});
-    }
+    if(!player)return res.status(400).json({success:false,message:'Player belum terhubung.'});
     const requestedVolume=req.body?.volume;
     const success=await setPlayerVolume(player,requestedVolume);
-    if(!success){
-        return res.status(400).json({success:false,volume:getPlayerVolume(player)});
-    }
-    return res.json({success:true,volume});
+    if(!success)return res.status(400).json({success:false,volume:getPlayerVolume(player)});
+    return res.json({success:true,volume:volume});
 });
 app.post('/api/loop-track',(req,res)=>{
     repeatMode=repeatMode==='track'?'off':'track';
@@ -625,13 +545,7 @@ client.on('ready',async()=>{
         console.error('[Lavalink] Init error:',err?.message||err);
     }
 });
-process.on('unhandledRejection',reason=>{
-    console.warn('[Unhandled Rejection]',reason);
-});
-process.on('uncaughtException',err=>{
-    console.warn('[Uncaught Exception]',err?.message||err);
-});
-app.listen(PORT,'0.0.0.0',()=>{
-    console.log('Web Controller berjalan di port '+PORT);
-});
+process.on('unhandledRejection',reason=>console.warn('[Unhandled Rejection]',reason));
+process.on('uncaughtException',err=>console.warn('[Uncaught Exception]',err?.message||err));
+app.listen(PORT,'0.0.0.0',()=>console.log('Web Controller berjalan di port '+PORT));
 client.login(TOKEN);
