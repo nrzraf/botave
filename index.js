@@ -157,6 +157,18 @@ async function playAutoplay(player,previousTrack){
     }
 }
 
+lavalink.on('trackStart',(player,track)=>{
+    console.log('[Track Start] '+getTrackTitle(track));
+});
+
+lavalink.on('trackError',(player,track,payload)=>{
+    console.error('[Track Error] '+getTrackTitle(track),payload);
+});
+
+lavalink.on('trackStuck',(player,track,payload)=>{
+    console.error('[Track Stuck] '+getTrackTitle(track),payload);
+});
+
 lavalink.on('trackEnd',async(player,track)=>{
     if(!track)return;
     console.log('[Track End] '+getTrackTitle(track));
