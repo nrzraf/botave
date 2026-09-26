@@ -16,14 +16,14 @@ if(!TOKEN){
     process.exit(1);
 }
 const lavalink=new LavalinkManager({
-    nodes:[{
-        id:'node-freelavalink',
-        host:'lavalink.v4.lavalink.is-a.dev',
-        port:443,
-        authorization:'youshallnotpass',
-        secure:true,
-        retryAmount:10,
-        retryDelay:5000
+    nodes: [{
+        id: 'node-freelavalink',
+        host: 'lavalink.v4.lavalink.is-a.dev',
+        port: 443,
+        authorization: 'youshallnotpass',
+        secure: true,
+        retryAmount: 10,
+        retryDelay: 5000
     }],
     sendToShard:(guildId,payload)=>{
         const guild=client.guilds.cache.get(guildId);
