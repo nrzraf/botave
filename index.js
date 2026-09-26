@@ -47,6 +47,8 @@ lavalink.nodeManager.on('disconnect',(node,reason)=>{
 });
 let currentVoiceChannel=null;
 let savedVoiceChannelId='';
+let voiceConnectPromise=null;
+let voiceConnectChannelId='';
 let isAutoplayEnabled=false;
 let repeatMode='off';
 let volume=100;
@@ -89,6 +91,11 @@ function rememberTrack(track){
         const oldest=autoplayHistory.values().next().value;
         if(oldest)autoplayHistory.delete(oldest);
     }
+}
+function isVoiceChannelQuery(value){
+    const query=String(value||'').trim();
+    if(!query)return false;
+    return query===savedVoiceChannelId||query===currentVoiceChannel?.id;
 }
 async function getAutoplayTrack(player,previousTrack){
     if(!player||!previousTrack||manualStopInProgress)return null;
@@ -182,34 +189,49 @@ lavalink.on('trackEnd',async(player,track)=>{
 client.on('raw',data=>lavalink.sendRawData(data));
 
 async function connectToChannel(channelId){
+    channelId=String(channelId||'').trim();
+    if(!channelId)return{success:false,message:'Voice Channel ID kosong!'};
+    if(voiceConnectPromise){
+        if(voiceConnectChannelId===channelId)return voiceConnectPromise;
+        try{await voiceConnectPromise}catch(_){}
+    }
+    voiceConnectChannelId=channelId;
+    voiceConnectPromise=(async()=>{
+        try{
+            const channel=await client.channels.fetch(channelId);
+            if(!channel?.isVoice())return{success:false,message:'Bukan Voice Channel!'};
+            manualStopInProgress=false;
+            let player=lavalink.getPlayer(channel.guild.id);
+            if(player){
+                try{await player.disconnect();}catch(_){}
+                try{await player.destroy();}catch(_){}
+            }
+            player=await lavalink.createPlayer({
+                guildId:channel.guild.id,
+                voiceChannelId:channel.id,
+                textChannelId:channel.id,
+                selfDeaf:false,
+                selfMute:false,
+                volume:volume
+            });
+            await player.connect();
+            try{await player.setVolume(volume);}catch(err){
+                console.warn('[Volume] Initial set failed:',err?.message||err);
+            }
+            currentVoiceChannel=channel;
+            savedVoiceChannelId=channel.id;
+            console.log('[Voice] Connected: '+channel.name);
+            return{success:true};
+        }catch(err){
+            console.error('[Voice] Connect error:',err?.message||err);
+            return{success:false,message:err?.message||'Unknown error'};
+        }
+    })();
     try{
-        const channel=await client.channels.fetch(channelId);
-        if(!channel?.isVoice())return{success:false,message:'Bukan Voice Channel!'};
-        manualStopInProgress=false;
-        let player=lavalink.getPlayer(channel.guild.id);
-        if(player){
-            try{await player.disconnect();}catch(_){}
-            try{await player.destroy();}catch(_){}
-        }
-        player=await lavalink.createPlayer({
-            guildId:channel.guild.id,
-            voiceChannelId:channel.id,
-            textChannelId:channel.id,
-            selfDeaf:false,
-            selfMute:false,
-            volume:volume
-        });
-        await player.connect();
-        try{await player.setVolume(volume);}catch(err){
-            console.warn('[Volume] Initial set failed:',err?.message||err);
-        }
-        currentVoiceChannel=channel;
-        savedVoiceChannelId=channel.id;
-        console.log('[Voice] Connected: '+channel.name);
-        return{success:true};
-    }catch(err){
-        console.error('[Voice] Connect error:',err?.message||err);
-        return{success:false,message:err?.message||'Unknown error'};
+        return await voiceConnectPromise;
+    }finally{
+        voiceConnectPromise=null;
+        voiceConnectChannelId='';
     }
 }
 
@@ -453,7 +475,8 @@ app.get('/favicon.ico',(_,res)=>res.status(204).end());
 app.get('/',(_,res)=>res.send(renderDashboard()));
 
 app.post('/api/connect',async(req,res)=>{
-    if(req.body.channelId)await connectToChannel(req.body.channelId.trim());
+    const channelId=String(req.body.channelId||'').trim();
+    if(channelId)await connectToChannel(channelId);
     res.redirect('/');
 });
 
@@ -463,9 +486,22 @@ app.post('/api/leave',async(_,res)=>{
 });
 
 app.post('/api/play',async(req,res)=>{
-    const query=req.body.query?.trim();
+    const query=String(req.body.query||'').trim();
     if(!query)return res.redirect('/');
-    if(!currentVoiceChannel)return res.send('<script>alert("Atur Voice Channel ID terlebih dahulu!");location.href="/";</script>');
+    if(isVoiceChannelQuery(query)){
+        console.warn('[Play] Voice Channel ID diterima sebagai query, diabaikan: '+query);
+        return res.redirect('/');
+    }
+    if(!currentVoiceChannel){
+        if(savedVoiceChannelId){
+            const connection=await connectToChannel(savedVoiceChannelId);
+            if(!connection.success){
+                return res.send('<script>alert("Gagal terhubung ke Voice Channel!");location.href="/";</script>');
+            }
+        }else{
+            return res.send('<script>alert("Atur Voice Channel ID terlebih dahulu!");location.href="/";</script>');
+        }
+    }
     manualStopInProgress=false;
     try{
         let player=lavalink.getPlayer(currentVoiceChannel.guild.id);
