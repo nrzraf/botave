@@ -38,22 +38,26 @@ const app = express();
 const client = new Client();
 
 const TOKEN = process.env.DISCORD_TOKEN;
-const VOICE_CHANNEL_ID = process.env.VOICE_CHANNEL_ID; // ID VC default
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+if (!TOKEN) {
+    console.error("ERROR: DISCORD_TOKEN tidak ditemukan di Environment Variables!");
+    process.exit(1);
+}
 
 let audioPlayer = createAudioPlayer();
 let queue = [];
 let isPlaying = false;
 let currentTrack = null;
+let currentVoiceChannel = null;
 
-// Mengubungkan Bot ke VC
-async function initVoice() {
+// Fungsi Menghubungkan Bot ke Voice Channel Dinamis
+async function connectToChannel(channelId) {
     try {
-        const channel = await client.channels.fetch(VOICE_CHANNEL_ID);
-        if (!channel) return console.error('Voice channel tidak ditemukan.');
+        const channel = await client.channels.fetch(channelId);
+        if (!channel || !channel.isVoice()) {
+            return { success: false, message: 'ID Channel tidak ditemukan atau bukan Voice Channel!' };
+        }
 
         const connection = joinVoiceChannel({
             channelId: channel.id,
@@ -64,9 +68,12 @@ async function initVoice() {
         });
 
         connection.subscribe(audioPlayer);
-        console.log(`Bot berhasil terhubung ke VC: ${channel.name}`);
+        currentVoiceChannel = channel;
+        console.log(`Bot terhubung ke VC: ${channel.name} (${channel.guild.name})`);
+        return { success: true, name: channel.name, guild: channel.guild.name };
     } catch (err) {
         console.error('Gagal koneksi Voice:', err);
+        return { success: false, message: err.message };
     }
 }
 
@@ -99,10 +106,12 @@ audioPlayer.on(AudioPlayerStatus.Idle, () => {
     playNext();
 });
 
-// ==========================================
-// ENDPOINT DASHBOARD WEB (INTERFACE)
-// ==========================================
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
+// ==========================================
+// DASHBOARD INTERFACE
+// ==========================================
 app.get('/', (req, res) => {
     const queueList = queue.map((song, i) => `<li>${i + 1}. ${song.title}</li>`).join('');
     
@@ -113,43 +122,82 @@ app.get('/', (req, res) => {
             <title>Ave Web Controller</title>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
-                body { font-family: sans-serif; background: #121212; color: #fff; padding: 20px; max-width: 500px; margin: auto; }
-                input, button { padding: 12px; margin: 5px 0; width: 100%; box-sizing: border-box; border-radius: 6px; border: none; }
-                input { background: #222; color: #fff; border: 1px solid #444; }
-                button { background: #5865F2; color: #fff; font-weight: bold; cursor: pointer; }
-                button.alt { background: #444; }
-                .status { background: #1e1e1e; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f1015; color: #e1e1e6; padding: 20px; max-width: 480px; margin: auto; }
+                .card { background: #181920; padding: 18px; border-radius: 12px; margin-bottom: 16px; border: 1px solid #282a36; }
+                h2, h3 { margin-top: 0; color: #fff; }
+                input, button { padding: 12px; margin: 6px 0; width: 100%; box-sizing: border-box; border-radius: 8px; border: none; font-size: 14px; }
+                input { background: #222431; color: #fff; border: 1px solid #323546; }
+                input:focus { border-color: #5865F2; outline: none; }
+                button { background: #5865F2; color: #fff; font-weight: bold; cursor: pointer; transition: 0.2s; }
+                button:hover { opacity: 0.9; }
+                button.alt { background: #2b2d3c; }
+                button.danger { background: #ed4245; }
+                .badge { display: inline-block; padding: 4px 8px; background: #222431; border-radius: 6px; font-size: 12px; font-weight: bold; color: #5865F2; }
             </style>
         </head>
         <body>
-            <h2>Ave Music Controller</h2>
-            <div class="status">
-                <strong>Sedang Diputar:</strong> <br>${currentTrack ? currentTrack.title : 'Tidak ada'}<br><br>
-                <strong>Status:</strong> ${isPlaying ? 'Playing' : 'Paused/Stopped'}
+            <h2>Ave Web Controller</h2>
+
+            <!-- CARD VOICE CHANNEL -->
+            <div class="card">
+                <h3>Voice Channel Target</h3>
+                <p style="font-size: 13px; margin: 4px 0 12px 0; color: #a0a0b0;">
+                    Status VC: <strong>${currentVoiceChannel ? `${currentVoiceChannel.name} (${currentVoiceChannel.guild.name})` : 'Belum Terhubung'}</strong>
+                </p>
+                <form action="/api/connect" method="POST">
+                    <input type="text" name="channelId" placeholder="Masukkan Voice Channel ID" value="${currentVoiceChannel ? currentVoiceChannel.id : ''}" required />
+                    <button type="submit" class="alt">Set / Pindah Voice Channel</button>
+                </form>
             </div>
 
-            <form action="/api/play" method="POST">
-                <input type="text" name="query" placeholder="Masukkan Judul Lagu / URL YouTube" required />
-                <button type="submit">Play / Add Queue</button>
-            </form>
+            <!-- CARD PLAYER -->
+            <div class="card">
+                <h3>Music Player</h3>
+                <p style="font-size: 13px; margin-bottom: 12px;">
+                    <strong>Sedang Diputar:</strong><br>
+                    <span style="color: #5865F2; font-weight: bold;">${currentTrack ? currentTrack.title : 'Tidak ada'}</span>
+                </p>
 
-            <div style="display: flex; gap: 10px;">
-                <form action="/api/pause" method="POST" style="flex:1;"><button type="submit" class="alt">Pause</button></form>
-                <form action="/api/resume" method="POST" style="flex:1;"><button type="submit" class="alt">Resume</button></form>
-                <form action="/api/skip" method="POST" style="flex:1;"><button type="submit" class="alt">Skip</button></form>
+                <form action="/api/play" method="POST">
+                    <input type="text" name="query" placeholder="Judul Lagu / URL YouTube" required />
+                    <button type="submit">Play / Add Queue</button>
+                </form>
+
+                <div style="display: flex; gap: 8px; margin-top: 6px;">
+                    <form action="/api/pause" method="POST" style="flex:1;"><button type="submit" class="alt">Pause</button></form>
+                    <form action="/api/resume" method="POST" style="flex:1;"><button type="submit" class="alt">Resume</button></form>
+                    <form action="/api/skip" method="POST" style="flex:1;"><button type="submit" class="alt">Skip</button></form>
+                </div>
             </div>
 
-            <h3>Antrean Lagu</h3>
-            <ul>${queueList || '<li>Antrean kosong</li>'}</ul>
+            <!-- CARD QUEUE -->
+            <div class="card">
+                <h3>Antrean Lagu</h3>
+                <ol style="padding-left: 20px; font-size: 14px; margin: 0;">${queueList || '<li>Antrean kosong</li>'}</ol>
+            </div>
         </body>
         </html>
     `);
 });
 
-// REST APIs
+// ==========================================
+// API ENDPOINTS
+// ==========================================
+app.post('/api/connect', async (req, res) => {
+    const { channelId } = req.body;
+    if (channelId) {
+        await connectToChannel(channelId.trim());
+    }
+    res.redirect('/');
+});
+
 app.post('/api/play', async (req, res) => {
     const { query } = req.body;
     if (!query) return res.redirect('/');
+
+    if (!currentVoiceChannel) {
+        return res.send('<script>alert("Atur Voice Channel ID terlebih dahulu!"); window.location.href="/";</script>');
+    }
 
     try {
         let songInfo = {};
@@ -192,7 +240,6 @@ app.post('/api/skip', (req, res) => {
 
 client.on('ready', () => {
     console.log(`Logged in as ${client.user.tag}`);
-    initVoice();
 });
 
 app.listen(PORT, () => {
