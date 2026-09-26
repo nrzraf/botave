@@ -38,7 +38,14 @@ const app = express();
 const client = new Client({ checkUpdate: false });
 
 const TOKEN = process.env.DISCORD_TOKEN;
+// Mengunci PORT ke 3000 jika process.env.PORT bernilai undefined
 const PORT = process.env.PORT || 3000;
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Menangani request /favicon.ico agar tidak memicu 502/404
+app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 if (!TOKEN) {
     console.error("ERROR: DISCORD_TOKEN tidak ditemukan di Environment Variables!");
