@@ -511,17 +511,23 @@ app.post('/api/play',async(req,res)=>{
             player=lavalink.getPlayer(currentVoiceChannel.guild.id);
         }
         if(!player)return res.redirect('/');
+
         const searchQuery=buildSearchQuery(query);
         console.log('[Search] '+searchQuery);
+
         const result=await player.search({query:searchQuery},client.user);
-        console.log('[Search] Found '+(result?.tracks?.length||0)+' track(s).');
-        if(!result?.tracks?.length){
+        const track=result?.tracks?.[0];
+
+        console.log('[Search] Result: '+(track?getTrackTitle(track):'Tidak ada'));
+
+        if(!track){
             console.warn('[Search] Tidak ada hasil untuk: '+query);
             return res.redirect('/');
         }
-        const track=result.tracks[0];
+
         player.queue.add(track);
         console.log('[Play] '+getTrackTitle(track));
+
         if(!player.playing&&!player.paused)await player.play();
     }catch(err){
         console.error('[Play/Search Error]:',err?.stack||err?.message||err);
