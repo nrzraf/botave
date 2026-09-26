@@ -1,4 +1,4 @@
-// Polyfill Web APIs
+// Polyfill Web APIs untuk undici / play-dl
 const { Blob, File } = require('buffer');
 const { fetch, Headers, Request, Response, FormData } = require('undici');
 
@@ -12,7 +12,18 @@ if (!globalThis.fetch) {
     globalThis.Response = Response;
 }
 
-// Patch Friend Source Flags Null Error
+const express = require('express');
+const { Client } = require('discord.js-selfbot-v13');
+const { 
+    joinVoiceChannel, 
+    createAudioPlayer, 
+    createAudioResource, 
+    AudioPlayerStatus 
+} = require('@discordjs/voice');
+const ytdl = require('@distube/ytdl-core');
+const play = require('play-dl');
+
+// Patch Friend Source Flags Null Error pada discord.js-selfbot-v13
 const ClientUserSettingManager = require('discord.js-selfbot-v13/src/managers/ClientUserSettingManager');
 const originalPatch = ClientUserSettingManager.prototype._patch;
 ClientUserSettingManager.prototype._patch = function (data) {
@@ -21,18 +32,6 @@ ClientUserSettingManager.prototype._patch = function (data) {
     }
     return originalPatch.call(this, data);
 };
-
-const express = require('express');
-const { Client } = require('discord.js-selfbot-v13');
-const { 
-    joinVoiceChannel, 
-    getVoiceConnection, 
-    createAudioPlayer, 
-    createAudioResource, 
-    AudioPlayerStatus 
-} = require('@discordjs/voice');
-const ytdl = require('@distube/ytdl-core');
-const play = require('play-dl');
 
 const app = express();
 const client = new Client();
@@ -119,7 +118,7 @@ app.get('/', (req, res) => {
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Ave Web Controller</title>
+            <title>Voicecord Web Controller</title>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
                 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f1015; color: #e1e1e6; padding: 20px; max-width: 480px; margin: auto; }
@@ -131,14 +130,11 @@ app.get('/', (req, res) => {
                 button { background: #5865F2; color: #fff; font-weight: bold; cursor: pointer; transition: 0.2s; }
                 button:hover { opacity: 0.9; }
                 button.alt { background: #2b2d3c; }
-                button.danger { background: #ed4245; }
-                .badge { display: inline-block; padding: 4px 8px; background: #222431; border-radius: 6px; font-size: 12px; font-weight: bold; color: #5865F2; }
             </style>
         </head>
         <body>
-            <h2>Ave Web Controller</h2>
+            <h2>Voicecord Controller</h2>
 
-            <!-- CARD VOICE CHANNEL -->
             <div class="card">
                 <h3>Voice Channel Target</h3>
                 <p style="font-size: 13px; margin: 4px 0 12px 0; color: #a0a0b0;">
@@ -150,7 +146,6 @@ app.get('/', (req, res) => {
                 </form>
             </div>
 
-            <!-- CARD PLAYER -->
             <div class="card">
                 <h3>Music Player</h3>
                 <p style="font-size: 13px; margin-bottom: 12px;">
@@ -170,7 +165,6 @@ app.get('/', (req, res) => {
                 </div>
             </div>
 
-            <!-- CARD QUEUE -->
             <div class="card">
                 <h3>Antrean Lagu</h3>
                 <ol style="padding-left: 20px; font-size: 14px; margin: 0;">${queueList || '<li>Antrean kosong</li>'}</ol>
@@ -242,7 +236,8 @@ client.on('ready', () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
 
-app.listen(PORT, () => {
+// Menentukan server listening ke 0.0.0.0 untuk Railway Proxy Binding
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`Web Controller berjalan di port ${PORT}`);
 });
 
