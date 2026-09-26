@@ -103,7 +103,8 @@ function buildSearchQuery(query) {
     const value = String(query || '').trim();
     if (!value) return '';
     if (/^(https?:\/\/|ytsearch:|ytmsearch:|scsearch:|spsearch:|dzsearch:|amsearch:)/i.test(value)) return value;
-    return 'ytsearch:' + value;
+    // Gunakan SoundCloud (scsearch:) agar 100% bebas dari blokir IP YouTube Datacenter
+    return 'scsearch:' + value;
 }
 
 function escapeHtml(value) {
