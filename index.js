@@ -52,7 +52,7 @@ const lavalink = new LavalinkManager({
     client: {
         id: '100000000000000000'
     },
-    autoSkip: true // Auto skip saat lagu selesai
+    autoSkip: true
 });
 
 lavalink.nodeManager.on('error', (node, error) => {
@@ -69,26 +69,60 @@ lavalink.nodeManager.on('disconnect', (node, reason) => {
 
 let savedVoiceChannelId = "";
 let currentVoiceChannel = null;
-let isAutoplayEnabled = false; // State Autoplay Global
-let lastPlayedTrack = null;
+let isAutoplayEnabled = false;
 
-// Event ketika lagu selesai diputar
+// Mode Repeat State: 'off' | 'track' | 'queue'
+let repeatMode = 'off';
+
+// Listener saat lagu selesai diputar
 lavalink.on('trackEnd', async (player, track) => {
-    lastPlayedTrack = track;
-    
-    // Logika Autoplay ketika antrean habis & fitur autoplay aktif
-    if (isAutoplayEnabled && player.queue.tracks.length === 0) {
+    // 1. Handling Mode Loop Track
+    if (repeatMode === 'track' && track) {
+        console.log(`[Loop Track] Memutar ulang lagu: ${track.info.title}`);
+        player.queue.add(track);
+        await player.play();
+        return;
+    }
+
+    // 2. Handling Mode Loop Queue
+    if (repeatMode === 'queue' && track) {
+        console.log(`[Loop Queue] Menambahkan kembali lagu ke akhir antrean: ${track.info.title}`);
+        player.queue.add(track);
+    }
+
+    // 3. Handling Autoplay Berbasis Artis & Popularitas
+    if (isAutoplayEnabled && repeatMode === 'off' && player.queue.tracks.length === 0 && track) {
         try {
-            console.log(`[Autoplay] Antrean habis. Mencari lagu rekomendasi berdasarkan: ${track.info.title}`);
-            const query = `ytsearch:${track.info.author} ${track.info.title} mix`;
-            const resSearch = await player.search({ query: query }, client.user);
+            const artistName = track.info.author;
+            console.log(`[Autoplay] Antrean kosong. Mencari lagu populer lainnya dari artis: ${artistName}`);
             
-            if (resSearch && resSearch.tracks && resSearch.tracks.length > 1) {
-                // Ambil lagu rekomendasi berikutnya yang bukan lagu yang baru saja selesai
-                const nextTrack = resSearch.tracks.find(t => t.info.identifier !== track.info.identifier) || resSearch.tracks[1];
-                player.queue.add(nextTrack);
+            // Pencarian lagu terpopuler artis di YouTube/Lavalink
+            const searchQueries = [
+                `ytsearch:${artistName} top tracks`,
+                `ytsearch:${artistName} popular songs`,
+                `ytsearch:${artistName}`
+            ];
+
+            let recommendedTrack = null;
+
+            for (const q of searchQueries) {
+                const resSearch = await player.search({ query: q }, client.user);
+                if (resSearch && resSearch.tracks && resSearch.tracks.length > 0) {
+                    // Cari lagu yang tidak sama dengan lagu yang baru selesai
+                    const candidates = resSearch.tracks.filter(t => t.info.identifier !== track.info.identifier);
+                    if (candidates.length > 0) {
+                        // Pilih lagu acak dari 5 teratas untuk variasi
+                        const randomIndex = Math.floor(Math.random() * Math.min(candidates.length, 5));
+                        recommendedTrack = candidates[randomIndex];
+                        break;
+                    }
+                }
+            }
+
+            if (recommendedTrack) {
+                player.queue.add(recommendedTrack);
                 await player.play();
-                console.log(`[Autoplay] Memutar lagu otomatis: ${nextTrack.info.title}`);
+                console.log(`[Autoplay] Memutar lagu populer artis (${artistName}): ${recommendedTrack.info.title}`);
             }
         } catch (err) {
             console.error('[Autoplay Error]:', err.message);
@@ -160,13 +194,28 @@ app.get('/favicon.ico', (req, res) => res.status(204).end());
 function renderDashboard() {
     let player = currentVoiceChannel ? lavalink.getPlayer(currentVoiceChannel.guild.id) : null;
     let currentTrack = player && player.queue.current ? player.queue.current.info.title : 'Tidak ada';
-    let queueList = player ? player.queue.tracks.map((song, i) => `<li>${i + 1}. ${song.info.title}</li>`).join('') : '';
+    
+    // Render item antrean lagu dengan tombol Hapus (X) di bagian kanan
+    let queueList = '';
+    if (player && player.queue.tracks.length > 0) {
+        queueList = player.queue.tracks.map((song, i) => `
+            <li style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px;">
+                    ${i + 1}. ${song.info.title}
+                </span>
+                <form action="/api/delete-queue-item" method="POST" style="margin:0;">
+                    <input type="hidden" name="index" value="${i}" />
+                    <button type="submit" class="danger" style="padding: 4px 10px; margin: 0; font-size: 12px; width: auto;">X</button>
+                </form>
+            </li>
+        `).join('');
+    }
 
     return `
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Ave Bot</title>
+            <title>Voicecord Controller (Lavalink Engine)</title>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
                 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f1015; color: #e1e1e6; padding: 20px; max-width: 480px; margin: auto; }
@@ -180,10 +229,11 @@ function renderDashboard() {
                 button.alt { background: #2b2d3c; }
                 button.danger { background: #ed4245; }
                 button.active { background: #57F287; color: #000; }
+                ol { padding-left: 0; list-style: none; margin: 0; }
             </style>
         </head>
         <body>
-            <h2>Ave Bot</h2>
+            <h2>Voicecord Controller</h2>
 
             <div class="card">
                 <h3>Voice Channel Target</h3>
@@ -202,7 +252,7 @@ function renderDashboard() {
             </div>
 
             <div class="card">
-                <h3>Music Player</h3>
+                <h3>Music Player (Lavalink Engine)</h3>
                 <p style="font-size: 13px; margin-bottom: 12px;">
                     <strong>Sedang Diputar:</strong><br>
                     <span style="color: #5865F2; font-weight: bold;">${currentTrack}</span>
@@ -219,17 +269,33 @@ function renderDashboard() {
                     <form action="/api/skip" method="POST" style="flex:1;"><button type="submit" class="alt">Skip</button></form>
                 </div>
 
-                <!-- Tombol Toggle Autoplay -->
-                <form action="/api/toggle-autoplay" method="POST" style="margin-top: 8px;">
+                <div style="display: flex; gap: 8px; margin-top: 6px;">
+                    <!-- Tombol Loop Track -->
+                    <form action="/api/loop-track" method="POST" style="flex:1;">
+                        <button type="submit" class="${repeatMode === 'track' ? 'active' : 'alt'}">
+                            Loop Track: ${repeatMode === 'track' ? 'ON' : 'OFF'}
+                        </button>
+                    </form>
+                    
+                    <!-- Tombol Loop Queue -->
+                    <form action="/api/loop-queue" method="POST" style="flex:1;">
+                        <button type="submit" class="${repeatMode === 'queue' ? 'active' : 'alt'}">
+                            Loop Queue: ${repeatMode === 'queue' ? 'ON' : 'OFF'}
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Tombol Autoplay -->
+                <form action="/api/toggle-autoplay" method="POST" style="margin-top: 6px;">
                     <button type="submit" class="${isAutoplayEnabled ? 'active' : 'alt'}">
-                        Autoplay: ${isAutoplayEnabled ? 'ON' : 'OFF'}
+                        Autoplay (Artist Popularity): ${isAutoplayEnabled ? 'ON' : 'OFF'}
                     </button>
                 </form>
             </div>
 
             <div class="card">
-                <h3>Queue</h3>
-                <ol style="padding-left: 20px; font-size: 14px; margin: 0;">${queueList || '<li>Antrean kosong</li>'}</ol>
+                <h3>Antrean Lagu</h3>
+                <ol>${queueList || '<li style="font-size:14px;">Antrean kosong</li>'}</ol>
             </div>
         </body>
         </html>
@@ -284,9 +350,35 @@ app.post('/api/play', async (req, res) => {
     res.redirect('/');
 });
 
+app.post('/api/loop-track', (req, res) => {
+    repeatMode = repeatMode === 'track' ? 'off' : 'track';
+    console.log(`Mode Repeat diubah ke: ${repeatMode}`);
+    res.redirect('/');
+});
+
+app.post('/api/loop-queue', (req, res) => {
+    repeatMode = repeatMode === 'queue' ? 'off' : 'queue';
+    console.log(`Mode Repeat diubah ke: ${repeatMode}`);
+    res.redirect('/');
+});
+
 app.post('/api/toggle-autoplay', (req, res) => {
     isAutoplayEnabled = !isAutoplayEnabled;
     console.log(`Autoplay status diubah menjadi: ${isAutoplayEnabled ? 'ON' : 'OFF'}`);
+    res.redirect('/');
+});
+
+app.post('/api/delete-queue-item', (req, res) => {
+    const { index } = req.body;
+    if (currentVoiceChannel && index !== undefined) {
+        const player = lavalink.getPlayer(currentVoiceChannel.guild.id);
+        if (player && player.queue.tracks.length > parseInt(index)) {
+            const removedTrack = player.queue.tracks.splice(parseInt(index), 1);
+            if (removedTrack.length > 0) {
+                console.log(`Menghapus dari antrean: ${removedTrack[0].info.title}`);
+            }
+        }
+    }
     res.redirect('/');
 });
 
