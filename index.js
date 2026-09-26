@@ -55,6 +55,7 @@ let manualSkipInProgress=false;
 let manualStopInProgress=false;
 const autoplayHistory=new Set();
 const MAX_HISTORY=100;
+
 function getCurrentPlayer(){
     if(!currentVoiceChannel)return null;
     return lavalink.getPlayer(currentVoiceChannel.guild.id);
@@ -70,6 +71,12 @@ function getTrackTitle(track){
 }
 function getTrackId(track){
     return track?.info?.identifier||null;
+}
+function buildSearchQuery(query){
+    const value=String(query||'').trim();
+    if(!value)return '';
+    if(/^(https?:\/\/|ytsearch:|ytmsearch:|scsearch:|spsearch:|dzsearch:|amsearch:)/i.test(value))return value;
+    return 'ytsearch:'+value;
 }
 function escapeHtml(value){
     return String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'","&#039;");
@@ -142,6 +149,7 @@ async function playAutoplay(player,previousTrack){
         autoplayActionInProgress=false;
     }
 }
+
 lavalink.on('trackEnd',async(player,track)=>{
     if(!track)return;
     console.log('[Track End] '+getTrackTitle(track));
@@ -170,7 +178,9 @@ lavalink.on('trackEnd',async(player,track)=>{
     if(isAutoplayEnabled)await playAutoplay(player,track);
     else console.log('[Track End] Queue kosong, autoplay OFF.');
 });
+
 client.on('raw',data=>lavalink.sendRawData(data));
+
 async function connectToChannel(channelId){
     try{
         const channel=await client.channels.fetch(channelId);
@@ -202,13 +212,14 @@ async function connectToChannel(channelId){
         return{success:false,message:err?.message||'Unknown error'};
     }
 }
+
 async function leaveChannel(){
     if(!currentVoiceChannel)return;
     manualStopInProgress=true;
     try{
         const player=lavalink.getPlayer(currentVoiceChannel.guild.id);
         if(player){
-            try{await player.stop();}catch(_){}
+            try{await player.stopPlaying(true,false);}catch(_){}
             try{await player.disconnect();}catch(_){}
             try{await player.destroy();}catch(_){}
         }
@@ -221,26 +232,30 @@ async function leaveChannel(){
     autoplayActionInProgress=false;
     manualSkipInProgress=false;
 }
+
 async function stopPlayer(player){
     if(!player)return;
     manualStopInProgress=true;
     autoplayActionInProgress=false;
-    try{
-        if(player.queue?.tracks)player.queue.tracks.splice(0,player.queue.tracks.length);
-    }catch(err){
-        console.warn('[Stop] Queue cleanup failed:',err?.message||err);
-    }
-    try{await player.stop();}catch(err){
-        console.warn('[Stop] stop() failed:',err?.message||err);
-    }
-    try{
-        if(player.queue?.tracks)player.queue.tracks.splice(0,player.queue.tracks.length);
-    }catch(err){
-        console.warn('[Stop] Queue cleanup failed:',err?.message||err);
-    }
     manualSkipInProgress=false;
+    try{
+        if(typeof player.stopPlaying==='function'){
+            await player.stopPlaying(true,false);
+        }else{
+            if(player.queue?.tracks)player.queue.tracks.splice(0,player.queue.tracks.length);
+            console.warn('[Stop] stopPlaying() tidak tersedia.');
+        }
+    }catch(err){
+        console.warn('[Stop] stopPlaying() failed:',err?.message||err);
+    }
+    try{
+        if(player.queue?.tracks)player.queue.tracks.splice(0,player.queue.tracks.length);
+    }catch(err){
+        console.warn('[Stop] Queue cleanup failed:',err?.message||err);
+    }
     console.log('[Stop] Playback stopped and queue cleared.');
 }
+
 async function setPlayerVolume(player,requestedVolume){
     if(!player)return false;
     let newVolume=Number(requestedVolume);
@@ -256,6 +271,7 @@ async function setPlayerVolume(player,requestedVolume){
         return false;
     }
 }
+
 app.get('/api/state',(req,res)=>{
     try{
         const player=getCurrentPlayer();
@@ -290,6 +306,7 @@ app.get('/api/state',(req,res)=>{
         res.status(500).json({error:true});
     }
 });
+
 function renderDashboard(){
     const player=getCurrentPlayer();
     const current=player?.queue?.current?.info?.title||'Tidak ada';
@@ -429,18 +446,22 @@ leaveButton+
 '</body>'+
 '</html>';
 }
+
 app.use(express.json());
 app.use(express.urlencoded({extended:true}));
 app.get('/favicon.ico',(_,res)=>res.status(204).end());
 app.get('/',(_,res)=>res.send(renderDashboard()));
+
 app.post('/api/connect',async(req,res)=>{
     if(req.body.channelId)await connectToChannel(req.body.channelId.trim());
     res.redirect('/');
 });
+
 app.post('/api/leave',async(_,res)=>{
     await leaveChannel();
     res.redirect('/');
 });
+
 app.post('/api/play',async(req,res)=>{
     const query=req.body.query?.trim();
     if(!query)return res.redirect('/');
@@ -449,22 +470,29 @@ app.post('/api/play',async(req,res)=>{
     try{
         let player=lavalink.getPlayer(currentVoiceChannel.guild.id);
         if(!player){
-            await connectToChannel(currentVoiceChannel.id);
+            const connection=await connectToChannel(currentVoiceChannel.id);
+            if(!connection.success)return res.redirect('/');
             player=lavalink.getPlayer(currentVoiceChannel.guild.id);
         }
         if(!player)return res.redirect('/');
-        const result=await player.search({query},client.user);
-        if(result?.tracks?.length){
-            const track=result.tracks[0];
-            player.queue.add(track);
-            console.log('[Play] '+getTrackTitle(track));
-            if(!player.playing&&!player.paused)await player.play();
+        const searchQuery=buildSearchQuery(query);
+        console.log('[Search] '+searchQuery);
+        const result=await player.search({query:searchQuery},client.user);
+        console.log('[Search] Found '+(result?.tracks?.length||0)+' track(s).');
+        if(!result?.tracks?.length){
+            console.warn('[Search] Tidak ada hasil untuk: '+query);
+            return res.redirect('/');
         }
+        const track=result.tracks[0];
+        player.queue.add(track);
+        console.log('[Play] '+getTrackTitle(track));
+        if(!player.playing&&!player.paused)await player.play();
     }catch(err){
-        console.error('[Play Error]:',err?.message||err);
+        console.error('[Play/Search Error]:',err?.stack||err?.message||err);
     }
     res.redirect('/');
 });
+
 app.post('/api/pause',async(_,res)=>{
     const player=getCurrentPlayer();
     if(player){
@@ -472,6 +500,7 @@ app.post('/api/pause',async(_,res)=>{
     }
     res.redirect('/');
 });
+
 app.post('/api/resume',async(_,res)=>{
     const player=getCurrentPlayer();
     if(player){
@@ -479,6 +508,7 @@ app.post('/api/resume',async(_,res)=>{
     }
     res.redirect('/');
 });
+
 app.post('/api/skip',async(_,res)=>{
     const player=getCurrentPlayer();
     if(!player)return res.redirect('/');
@@ -516,11 +546,13 @@ app.post('/api/skip',async(_,res)=>{
     }
     res.redirect('/');
 });
+
 app.post('/api/stop',async(_,res)=>{
     const player=getCurrentPlayer();
     if(player)await stopPlayer(player);
     res.redirect('/');
 });
+
 app.post('/api/volume',async(req,res)=>{
     const player=getCurrentPlayer();
     if(!player)return res.status(400).json({success:false,message:'Player belum terhubung.'});
@@ -529,21 +561,25 @@ app.post('/api/volume',async(req,res)=>{
     if(!success)return res.status(400).json({success:false,volume:getPlayerVolume(player)});
     return res.json({success:true,volume:volume});
 });
+
 app.post('/api/loop-track',(req,res)=>{
     repeatMode=repeatMode==='track'?'off':'track';
     console.log('[Repeat] '+repeatMode);
     res.redirect('/');
 });
+
 app.post('/api/loop-queue',(req,res)=>{
     repeatMode=repeatMode==='queue'?'off':'queue';
     console.log('[Repeat] '+repeatMode);
     res.redirect('/');
 });
+
 app.post('/api/toggle-autoplay',(_,res)=>{
     isAutoplayEnabled=!isAutoplayEnabled;
     console.log('[Autoplay] '+(isAutoplayEnabled?'ON':'OFF'));
     res.redirect('/');
 });
+
 app.post('/api/delete-queue-item',(req,res)=>{
     const player=getCurrentPlayer();
     const index=Number.parseInt(req.body.index,10);
@@ -553,7 +589,9 @@ app.post('/api/delete-queue-item',(req,res)=>{
     }
     res.redirect('/');
 });
+
 app.get('*',(_,res)=>res.send(renderDashboard()));
+
 client.on('ready',async()=>{
     console.log('Logged in as '+client.user.tag);
     lavalink.options.client.id=client.user.id;
@@ -564,7 +602,9 @@ client.on('ready',async()=>{
         console.error('[Lavalink] Init error:',err?.message||err);
     }
 });
+
 process.on('unhandledRejection',reason=>console.warn('[Unhandled Rejection]',reason));
 process.on('uncaughtException',err=>console.warn('[Uncaught Exception]',err?.message||err));
+
 app.listen(PORT,'0.0.0.0',()=>console.log('Web Controller berjalan di port '+PORT));
 client.login(TOKEN);
