@@ -23,7 +23,6 @@ const {
     entersState,
     NoSubscriberBehavior
 } = require('@discordjs/voice');
-const ytdl = require('@distube/ytdl-core');
 const play = require('play-dl');
 
 // Patch Friend Source Flags Null Error pada discord.js-selfbot-v13
@@ -47,20 +46,36 @@ if (!TOKEN) {
     process.exit(1);
 }
 
-// Inisialisasi Cookie YouTube dari Variable Railway untuk Menembus Bot Detection
+// Fungsi Parser Cookie String ke Object / JSON untuk play-dl
+function parseCookieString(cookieStr) {
+    if (!cookieStr) return null;
+    const cookies = {};
+    cookieStr.split(';').forEach(cookie => {
+        const parts = cookie.split('=');
+        if (parts.length >= 2) {
+            const key = parts[0].trim();
+            const val = parts.slice(1).join('=').trim();
+            if (key) cookies[key] = val;
+        }
+    });
+    return cookies;
+}
+
+// Inisialisasi Cookie YouTube
 if (process.env.YT_COOKIE) {
     try {
+        const parsedCookie = parseCookieString(process.env.YT_COOKIE);
         play.setToken({
             youtube: {
-                cookie: process.env.YT_COOKIE
+                cookie: parsedCookie
             }
         });
-        console.log("YouTube Cookie berhasil dimuat ke play-dl.");
+        console.log("YouTube Cookie berhasil diparse dan dimuat ke play-dl.");
     } catch (err) {
         console.error("Gagal memasang YouTube Cookie:", err.message);
     }
 } else {
-    console.warn("PERINGATAN: YT_COOKIE belum dipasang di Railway Variables! YouTube mungkin memblokir pemutaran.");
+    console.warn("PERINGATAN: YT_COOKIE belum dipasang di Railway Variables!");
 }
 
 // Inisialisasi Audio Player
@@ -123,7 +138,7 @@ async function connectToChannel(channelId) {
     }
 }
 
-// Stream Audio dengan play-dl & Cookie Authentication
+// Stream Audio Murni via play-dl
 async function playNext() {
     if (queue.length === 0) {
         isPlaying = false;
@@ -137,21 +152,11 @@ async function playNext() {
     try {
         console.log(`Memproses pemutaran: ${currentTrack.title} (${currentTrack.url})`);
         
-        let stream;
-        try {
-            stream = await play.stream(currentTrack.url, {
-                discordPlayerCompatibility: true,
-                quality: 2
-            });
-        } catch (playErr) {
-            console.log('play-dl stream gagal, mencoba fallback ytdl-core...', playErr.message);
-            const ytdlStream = ytdl(currentTrack.url, {
-                filter: 'audioonly',
-                highWaterMark: 1 << 25,
-                quality: 'highestaudio'
-            });
-            stream = { stream: ytdlStream, type: 'arbitrary' };
-        }
+        const stream = await play.stream(currentTrack.url, {
+            discordPlayerCompatibility: true,
+            quality: 2,
+            htmldata: false
+        });
 
         const resource = createAudioResource(stream.stream, {
             inputType: stream.type,
@@ -287,25 +292,16 @@ app.post('/api/play', async (req, res) => {
 
         // 2. CEK LINK YOUTUBE LANGSUNG
         if (searchQuery.startsWith('http://') || searchQuery.startsWith('https://')) {
-            if (ytdl.validateURL(searchQuery)) {
-                const info = await ytdl.getBasicInfo(searchQuery);
-                songInfo = { title: info.videoDetails.title, url: info.videoDetails.video_url };
-            } else {
-                const info = await play.video_info(searchQuery);
-                songInfo = { title: info.video_details.title, url: info.video_details.url };
-            }
+            const info = await play.video_info(searchQuery);
+            songInfo = { title: info.video_details.title, url: info.video_details.url };
         } else {
             // 3. PENCARIAN JUDUL TEKS VIA YOUTUBE
             const ytResults = await play.search(searchQuery, { limit: 1, source: { youtube: 'video' } });
             if (ytResults && ytResults.length > 0) {
                 const video = ytResults[0];
-                const videoUrl = video.url && video.url.startsWith('http') 
-                    ? video.url 
-                    : `https://www.youtube.com/watch?v=${video.id}`;
-                
                 songInfo = { 
                     title: video.title, 
-                    url: videoUrl 
+                    url: video.url 
                 };
             }
         }
