@@ -16,10 +16,10 @@ const client = new Client({ checkUpdate: false });
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 3000;
-const LAVALINK_HOST = process.env.LAVALINK_HOST || 'lavalink.v4.lavalink.is-a.dev';
-const LAVALINK_PORT = Number(process.env.LAVALINK_PORT || 443);
+const LAVALINK_HOST = process.env.LAVALINK_HOST || 'lavalink.railway.internal';
+const LAVALINK_PORT = Number(process.env.LAVALINK_PORT || 2333);
 const LAVALINK_PASSWORD = process.env.LAVALINK_PASSWORD || 'youshallnotpass';
-const LAVALINK_SECURE = String(process.env.LAVALINK_SECURE ?? 'true').toLowerCase() === 'true';
+const LAVALINK_SECURE = String(process.env.LAVALINK_SECURE ?? 'false').toLowerCase() === 'true';
 
 if (!TOKEN) {
     console.error('ERROR: DISCORD_TOKEN tidak ditemukan!');
@@ -28,13 +28,13 @@ if (!TOKEN) {
 
 const lavalink = new LavalinkManager({
     nodes: [{
-        id: process.env.LAVALINK_ID || 'node-freelavalink',
+        id: process.env.LAVALINK_ID || 'main',
         host: LAVALINK_HOST,
         port: LAVALINK_PORT,
         authorization: LAVALINK_PASSWORD,
         secure: LAVALINK_SECURE,
         retryAmount: 10,
-        retryDelay: 5000
+        retryDelay: 3000
     }],
     sendToShard: (guildId, payload) => {
         const guild = client.guilds.cache.get(guildId);
@@ -66,6 +66,7 @@ let volume = 100;
 let autoplayActionInProgress = false;
 let manualSkipInProgress = false;
 let manualStopInProgress = false;
+let isPlayProcessing = false;
 const autoplayHistory = new Set();
 const MAX_HISTORY = 100;
 
@@ -89,7 +90,6 @@ function getTrackId(track) {
     return track?.info?.identifier || null;
 }
 
-// Prefiks default menggunakan spsearch: (Spotify)
 function buildSearchQuery(query) {
     const value = String(query || '').trim();
     if (!value) return '';
@@ -125,7 +125,6 @@ async function getAutoplayTrack(player, previousTrack) {
 
     const queries = [
         'spsearch:' + artist + ' top tracks',
-        'spsearch:' + artist + ' popular songs',
         'ytsearch:' + artist + ' top tracks',
         'ytsearch:' + artist
     ];
@@ -521,7 +520,7 @@ app.post('/api/leave', async (_, res) => {
     res.redirect('/');
 });
 
-// Route /api/play dengan Fallback 2 Tingkat (Spotify -> YouTube)
+// Guard anti double execution
 app.post('/api/play', async (req, res) => {
     const query = String(req.body.query || '').trim();
     if (!query) return res.redirect('/');
@@ -529,34 +528,48 @@ app.post('/api/play', async (req, res) => {
         console.warn('[Play] Voice Channel ID diterima sebagai query, diabaikan: ' + query);
         return res.redirect('/');
     }
-    if (!currentVoiceChannel) {
-        if (savedVoiceChannelId) {
-            const connection = await connectToChannel(savedVoiceChannelId);
-            if (!connection.success) {
-                return res.send('<script>alert("Gagal terhubung ke Voice Channel!");location.href="/";</script>');
-            }
-        } else {
-            return res.send('<script>alert("Atur Voice Channel ID terlebih dahulu!");location.href="/";</script>');
-        }
+    if (isPlayProcessing) {
+        console.warn('[Play] Request sedang diproses, mengabaikan duplikasi.');
+        return res.redirect('/');
     }
+
+    isPlayProcessing = true;
     manualStopInProgress = false;
+
     try {
+        if (!currentVoiceChannel) {
+            if (savedVoiceChannelId) {
+                const connection = await connectToChannel(savedVoiceChannelId);
+                if (!connection.success) {
+                    isPlayProcessing = false;
+                    return res.send('<script>alert("Gagal terhubung ke Voice Channel!");location.href="/";</script>');
+                }
+            } else {
+                isPlayProcessing = false;
+                return res.send('<script>alert("Atur Voice Channel ID terlebih dahulu!");location.href="/";</script>');
+            }
+        }
+
         let player = lavalink.getPlayer(currentVoiceChannel.guild.id);
         if (!player) {
             const connection = await connectToChannel(currentVoiceChannel.id);
-            if (!connection.success) return res.redirect('/');
+            if (!connection.success) {
+                isPlayProcessing = false;
+                return res.redirect('/');
+            }
             player = lavalink.getPlayer(currentVoiceChannel.guild.id);
         }
-        if (!player) return res.redirect('/');
+        if (!player) {
+            isPlayProcessing = false;
+            return res.redirect('/');
+        }
 
         let result = null;
         let searchQuery = buildSearchQuery(query);
 
-        // TAHAP 1: Cari via Spotify
-        console.log('[Search - Stage 1 (Spotify)] ' + searchQuery);
+        console.log('[Search - Stage 1] ' + searchQuery);
         result = await player.search({ query: searchQuery }, client.user);
 
-        // TAHAP 2: Fallback ke YouTube jika Spotify tidak ada hasil
         if (!result || !result.tracks || result.tracks.length === 0) {
             const ytQuery = 'ytsearch:' + query;
             console.log('[Search - Stage 2 (YouTube Fallback)] ' + ytQuery);
@@ -565,7 +578,8 @@ app.post('/api/play', async (req, res) => {
 
         const track = result?.tracks?.[0];
         if (!track) {
-            console.warn('[Search] Lagu tidak ditemukan di Spotify maupun YouTube: ' + query);
+            console.warn('[Search] Lagu tidak ditemukan: ' + query);
+            isPlayProcessing = false;
             return res.redirect('/');
         }
 
@@ -574,6 +588,8 @@ app.post('/api/play', async (req, res) => {
         if (!player.playing && !player.paused) await player.play();
     } catch (err) {
         console.error('[Play/Search Error]:', err?.stack || err?.message || err);
+    } finally {
+        isPlayProcessing = false;
     }
     res.redirect('/');
 });
