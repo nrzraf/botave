@@ -23,7 +23,7 @@ if (!TOKEN) {
     process.exit(1);
 }
 
-// Inisialisasi Lavalink Manager dengan Public Nodes Aktif
+// Inisialisasi Lavalink Manager
 const lavalink = new LavalinkManager({
     nodes: [
         {
@@ -51,7 +51,8 @@ const lavalink = new LavalinkManager({
     },
     client: {
         id: '100000000000000000'
-    }
+    },
+    autoSkip: true // Auto skip saat lagu selesai
 });
 
 lavalink.nodeManager.on('error', (node, error) => {
@@ -68,12 +69,37 @@ lavalink.nodeManager.on('disconnect', (node, reason) => {
 
 let savedVoiceChannelId = "";
 let currentVoiceChannel = null;
+let isAutoplayEnabled = false; // State Autoplay Global
+let lastPlayedTrack = null;
+
+// Event ketika lagu selesai diputar
+lavalink.on('trackEnd', async (player, track) => {
+    lastPlayedTrack = track;
+    
+    // Logika Autoplay ketika antrean habis & fitur autoplay aktif
+    if (isAutoplayEnabled && player.queue.tracks.length === 0) {
+        try {
+            console.log(`[Autoplay] Antrean habis. Mencari lagu rekomendasi berdasarkan: ${track.info.title}`);
+            const query = `ytsearch:${track.info.author} ${track.info.title} mix`;
+            const resSearch = await player.search({ query: query }, client.user);
+            
+            if (resSearch && resSearch.tracks && resSearch.tracks.length > 1) {
+                // Ambil lagu rekomendasi berikutnya yang bukan lagu yang baru saja selesai
+                const nextTrack = resSearch.tracks.find(t => t.info.identifier !== track.info.identifier) || resSearch.tracks[1];
+                player.queue.add(nextTrack);
+                await player.play();
+                console.log(`[Autoplay] Memutar lagu otomatis: ${nextTrack.info.title}`);
+            }
+        } catch (err) {
+            console.error('[Autoplay Error]:', err.message);
+        }
+    }
+});
 
 client.on('raw', (d) => {
     lavalink.sendRawData(d);
 });
 
-// Fungsi Menghubungkan & Berpindah Voice Channel secara Bersih
 async function connectToChannel(channelId) {
     try {
         const channel = await client.channels.fetch(channelId);
@@ -81,7 +107,6 @@ async function connectToChannel(channelId) {
             return { success: false, message: 'Channel tidak ditemukan atau bukan Voice Channel!' };
         }
 
-        // Jika sudah ada player di server ini, putuskan dan hapus player lama
         let player = lavalink.getPlayer(channel.guild.id);
         if (player) {
             try {
@@ -92,7 +117,6 @@ async function connectToChannel(channelId) {
             }
         }
 
-        // Buat player baru untuk channel tujuan
         player = await lavalink.createPlayer({
             guildId: channel.guild.id,
             voiceChannelId: channel.id,
@@ -104,7 +128,7 @@ async function connectToChannel(channelId) {
         await player.connect();
         currentVoiceChannel = channel;
         savedVoiceChannelId = channel.id;
-        console.log(`Lavalink berpindah & terhubung ke VC: ${channel.name} (${channel.guild.name})`);
+        console.log(`Lavalink terhubung ke VC: ${channel.name} (${channel.guild.name})`);
         return { success: true };
     } catch (err) {
         console.error('Gagal koneksi Voice:', err.message);
@@ -112,7 +136,6 @@ async function connectToChannel(channelId) {
     }
 }
 
-// Fungsi Leave Voice Channel
 async function leaveChannel() {
     if (!currentVoiceChannel) return;
     try {
@@ -143,7 +166,7 @@ function renderDashboard() {
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Voicecord Controller (Lavalink Engine)</title>
+            <title>Ave Bot</title>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
                 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f1015; color: #e1e1e6; padding: 20px; max-width: 480px; margin: auto; }
@@ -156,10 +179,11 @@ function renderDashboard() {
                 button:hover { opacity: 0.9; }
                 button.alt { background: #2b2d3c; }
                 button.danger { background: #ed4245; }
+                button.active { background: #57F287; color: #000; }
             </style>
         </head>
         <body>
-            <h2>Voicecord Controller</h2>
+            <h2>Ave Bot</h2>
 
             <div class="card">
                 <h3>Voice Channel Target</h3>
@@ -178,7 +202,7 @@ function renderDashboard() {
             </div>
 
             <div class="card">
-                <h3>Music Player (Lavalink Engine)</h3>
+                <h3>Music Player</h3>
                 <p style="font-size: 13px; margin-bottom: 12px;">
                     <strong>Sedang Diputar:</strong><br>
                     <span style="color: #5865F2; font-weight: bold;">${currentTrack}</span>
@@ -194,10 +218,17 @@ function renderDashboard() {
                     <form action="/api/resume" method="POST" style="flex:1;"><button type="submit" class="alt">Resume</button></form>
                     <form action="/api/skip" method="POST" style="flex:1;"><button type="submit" class="alt">Skip</button></form>
                 </div>
+
+                <!-- Tombol Toggle Autoplay -->
+                <form action="/api/toggle-autoplay" method="POST" style="margin-top: 8px;">
+                    <button type="submit" class="${isAutoplayEnabled ? 'active' : 'alt'}">
+                        Autoplay: ${isAutoplayEnabled ? 'ON' : 'OFF'}
+                    </button>
+                </form>
             </div>
 
             <div class="card">
-                <h3>Antrean Lagu</h3>
+                <h3>Queue</h3>
                 <ol style="padding-left: 20px; font-size: 14px; margin: 0;">${queueList || '<li>Antrean kosong</li>'}</ol>
             </div>
         </body>
@@ -250,6 +281,12 @@ app.post('/api/play', async (req, res) => {
     } catch (e) {
         console.error('Error Lavalink Play:', e.message);
     }
+    res.redirect('/');
+});
+
+app.post('/api/toggle-autoplay', (req, res) => {
+    isAutoplayEnabled = !isAutoplayEnabled;
+    console.log(`Autoplay status diubah menjadi: ${isAutoplayEnabled ? 'ON' : 'OFF'}`);
     res.redirect('/');
 });
 
