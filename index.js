@@ -23,35 +23,26 @@ if (!TOKEN) {
     process.exit(1);
 }
 
-// Inisialisasi Lavalink Manager dengan Multiple Public Node Fallback
+// Inisialisasi Lavalink Manager dengan Public Nodes Aktif
 const lavalink = new LavalinkManager({
     nodes: [
         {
-            id: 'node-1',
-            host: 'lava-v4.ajieyp.com',
+            id: 'node-jirayu',
+            host: 'lavalink.jirayu.net',
             port: 443,
             authorization: 'youshallnotpass',
             secure: true,
-            retryAmount: 5,
-            retryDelay: 3000
+            retryAmount: 10,
+            retryDelay: 5000
         },
         {
-            id: 'node-2',
-            host: 'lavalink.serene.pw',
+            id: 'node-yoko',
+            host: 'lava-v4.yoko.so',
             port: 443,
             authorization: 'youshallnotpass',
             secure: true,
-            retryAmount: 5,
-            retryDelay: 3000
-        },
-        {
-            id: 'node-3',
-            host: 'lavalink.v4.lavalink.is-a.dev',
-            port: 443,
-            authorization: 'youshallnotpass',
-            secure: true,
-            retryAmount: 5,
-            retryDelay: 3000
+            retryAmount: 10,
+            retryDelay: 5000
         }
     ],
     sendToShard: (guildId, payload) => {
@@ -63,13 +54,13 @@ const lavalink = new LavalinkManager({
     }
 });
 
-// IMPORTANT: Tangkap event error pada NodeManager agar aplikasi TIDAK CRASH
+// Listener penanganan error agar aplikasi TIDAK CRASH
 lavalink.nodeManager.on('error', (node, error) => {
-    console.warn(`[Lavalink Node Error] Node ${node.id || node.options.host} mengalami masalah:`, error.message || error);
+    console.warn(`[Lavalink Error] Node ${node.id || node.options.host}:`, error.message || error);
 });
 
 lavalink.nodeManager.on('connect', (node) => {
-    console.log(`[Lavalink Connected] Terhubung ke Lavalink Node: ${node.id || node.options.host}`);
+    console.log(`[Lavalink Connected] Berhasil terhubung ke Node: ${node.id || node.options.host}`);
 });
 
 lavalink.nodeManager.on('disconnect', (node, reason) => {
@@ -260,12 +251,12 @@ client.on('ready', async () => {
     await lavalink.init(client.user);
 });
 
-// Anti-crash global
+// Guardrail Anti-crash global
 process.on('unhandledRejection', (reason) => {
-    console.warn('Unhandled Rejection Caught:', reason);
+    console.warn('Unhandled Rejection Ignored:', reason);
 });
 process.on('uncaughtException', (err) => {
-    console.warn('Uncaught Exception Caught:', err.message || err);
+    console.warn('Uncaught Exception Ignored:', err.message || err);
 });
 
 app.listen(PORT, '0.0.0.0', () => {
