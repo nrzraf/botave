@@ -1,4 +1,4 @@
-```js
+js
 const express = require('express');
 const { Client } = require('discord.js-selfbot-v13');
 const { LavalinkManager } = require('lavalink-client');
@@ -556,4 +556,3 @@ app.listen(PORT, '0.0.0.0', () =>
 );
 
 client.login(TOKEN);
-```
