@@ -38,7 +38,7 @@ const app = express();
 const client = new Client({ checkUpdate: false });
 
 const TOKEN = process.env.DISCORD_TOKEN;
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3000;
 
 if (!TOKEN) {
     console.error("ERROR: DISCORD_TOKEN tidak ditemukan di Environment Variables!");
