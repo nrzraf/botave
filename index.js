@@ -1,551 +1,2090 @@
-const express=require('express');
-const {Client}=require('discord.js-selfbot-v13');
-const {LavalinkManager}=require('lavalink-client');
-const Settings=require('discord.js-selfbot-v13/src/managers/ClientUserSettingManager');
-const originalPatch=Settings.prototype._patch;
-Settings.prototype._patch=function(data){
-    if(data?.friend_source_flags===null)data.friend_source_flags={all:false,mutual_friends:false,mutual_guilds:false};
-    return originalPatch.call(this,data);
+const express = require('express');
+const { Client } = require('discord.js-selfbot-v13');
+const { LavalinkManager } = require('lavalink-client');
+
+const Settings = require(
+    'discord.js-selfbot-v13/src/managers/ClientUserSettingManager'
+);
+
+/* =========================================================
+   PATCH discord.js-selfbot-v13
+========================================================= */
+
+const originalPatch = Settings.prototype._patch;
+
+Settings.prototype._patch = function (data) {
+    if (data?.friend_source_flags === null) {
+        data.friend_source_flags = {
+            all: false,
+            mutual_friends: false,
+            mutual_guilds: false
+        };
+    }
+
+    return originalPatch.call(this, data);
 };
-const app=express();
-const client=new Client({checkUpdate:false});
-const TOKEN=process.env.DISCORD_TOKEN;
-const PORT=process.env.PORT||3000;
-if(!TOKEN){
+
+/* =========================================================
+   EXPRESS
+========================================================= */
+
+const app = express();
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+/* =========================================================
+   ENVIRONMENT
+========================================================= */
+
+const TOKEN = process.env.DISCORD_TOKEN;
+const PORT = Number(process.env.PORT || 3000);
+
+const LAVALINK_HOST =
+    process.env.LAVALINK_HOST || 'localhost';
+
+const LAVALINK_PORT =
+    Number(process.env.LAVALINK_PORT || 2333);
+
+const LAVALINK_PASSWORD =
+    process.env.LAVALINK_PASSWORD || 'youshallnotpass';
+
+const LAVALINK_SECURE =
+    String(process.env.LAVALINK_SECURE || 'false').toLowerCase() === 'true';
+
+const LAVALINK_ID =
+    process.env.LAVALINK_ID || 'main';
+
+const LAVALINK_RETRY_AMOUNT =
+    Number(process.env.LAVALINK_RETRY_AMOUNT || 10);
+
+const LAVALINK_RETRY_DELAY =
+    Number(process.env.LAVALINK_RETRY_DELAY || 5000);
+
+/* =========================================================
+   TOKEN CHECK
+========================================================= */
+
+if (!TOKEN) {
+    console.error('======================================');
     console.error('ERROR: DISCORD_TOKEN tidak ditemukan!');
+    console.error('======================================');
+
     process.exit(1);
 }
-const lavalink=new LavalinkManager({
-    nodes: [{
-        id: 'node-freelavalink',
-        host: 'lavalink.v4.lavalink.is-a.dev',
-        port: 443,
-        authorization: 'youshallnotpass',
-        secure: true,
-        retryAmount: 10,
-        retryDelay: 5000
-    }],
-    sendToShard:(guildId,payload)=>{
-        const guild=client.guilds.cache.get(guildId);
-        if(guild)guild.shard.send(payload);
+
+/* =========================================================
+   DISCORD CLIENT
+========================================================= */
+
+const client = new Client({
+    checkUpdate: false
+});
+
+/* =========================================================
+   LAVALINK
+========================================================= */
+
+console.log('======================================');
+console.log('[Lavalink] Configuration');
+console.log('======================================');
+console.log('Host       :', LAVALINK_HOST);
+console.log('Port       :', LAVALINK_PORT);
+console.log('Secure     :', LAVALINK_SECURE);
+console.log('Node ID    :', LAVALINK_ID);
+console.log('Retry      :', LAVALINK_RETRY_AMOUNT);
+console.log('Retry Delay:', LAVALINK_RETRY_DELAY);
+console.log('======================================');
+
+const lavalink = new LavalinkManager({
+    nodes: [
+        {
+            id: LAVALINK_ID,
+            host: LAVALINK_HOST,
+            port: LAVALINK_PORT,
+            authorization: LAVALINK_PASSWORD,
+
+            // false = ws://
+            // true  = wss://
+            secure: LAVALINK_SECURE,
+
+            retryAmount: LAVALINK_RETRY_AMOUNT,
+            retryDelay: LAVALINK_RETRY_DELAY,
+
+            requestSignalTimeoutMS: 10000,
+            closeOnError: false,
+
+            heartBeatInterval: 30000,
+            enablePingOnStatsCheck: true
+        }
+    ],
+
+    sendToShard: (guildId, payload) => {
+        try {
+            const guild = client.guilds.cache.get(guildId);
+
+            if (guild?.shard) {
+                guild.shard.send(payload);
+            }
+        } catch (error) {
+            console.warn(
+                '[Lavalink] sendToShard error:',
+                error?.message || error
+            );
+        }
     },
-    client:{id:'100000000000000000'},
-    autoSkip:true
+
+    client: {
+        id: '100000000000000000',
+        username: 'Botave'
+    },
+
+    autoSkip: true,
+    autoMove: false
 });
-lavalink.nodeManager.on('error',(node,error)=>{
-    console.warn('[Lavalink Error] Node '+(node?.id||node?.options?.host||'unknown')+':',error?.message||error);
+
+/* =========================================================
+   LAVALINK EVENTS
+========================================================= */
+
+lavalink.nodeManager.on('connect', node => {
+    console.log(
+        '[Lavalink] Connected:',
+        node?.id || node?.options?.host || 'unknown'
+    );
 });
-lavalink.nodeManager.on('connect',node=>{
-    console.log('[Lavalink] Connected: '+(node?.id||node?.options?.host||'unknown'));
+
+lavalink.nodeManager.on('disconnect', (node, reason) => {
+    console.warn(
+        '[Lavalink] Disconnected:',
+        node?.id || node?.options?.host || 'unknown'
+    );
+
+    console.warn(
+        '[Lavalink] Reason:',
+        reason || 'unknown'
+    );
 });
-lavalink.nodeManager.on('disconnect',(node,reason)=>{
-    console.warn('[Lavalink] Disconnected: '+(node?.id||node?.options?.host||'unknown'),reason||'');
+
+lavalink.nodeManager.on('error', (node, error) => {
+    console.warn(
+        '[Lavalink Error] Node:',
+        node?.id || node?.options?.host || 'unknown'
+    );
+
+    console.warn(
+        '[Lavalink Error]',
+        error?.message || error
+    );
 });
-let currentVoiceChannel=null;
-let savedVoiceChannelId='';
-let isAutoplayEnabled=false;
-let repeatMode='off';
-let volume=100;
-let autoplayActionInProgress=false;
-let manualSkipInProgress=false;
-const autoplayHistory=new Set();
-const MAX_HISTORY=100;
-function getCurrentPlayer(){
-    if(!currentVoiceChannel)return null;
-    return lavalink.getPlayer(currentVoiceChannel.guild.id);
+
+/* =========================================================
+   STATE
+========================================================= */
+
+let currentVoiceChannel = null;
+let savedVoiceChannelId = '';
+
+let isAutoplayEnabled = false;
+let repeatMode = 'off';
+
+let volume = 100;
+
+let autoplayActionInProgress = false;
+let manualSkipInProgress = false;
+
+const autoplayHistory = new Set();
+
+const MAX_HISTORY = 100;
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function getCurrentPlayer() {
+    if (!currentVoiceChannel) {
+        return null;
+    }
+
+    try {
+        return lavalink.getPlayer(
+            currentVoiceChannel.guild.id
+        );
+    } catch {
+        return null;
+    }
 }
-function getPlayerVolume(player){
-    if(!player)return volume;
-    const currentVolume=Number(player.volume);
-    if(Number.isFinite(currentVolume)&&currentVolume>=0)return Math.min(100,currentVolume);
+
+function getPlayerVolume(player) {
+    if (!player) {
+        return volume;
+    }
+
+    const currentVolume = Number(player.volume);
+
+    if (
+        Number.isFinite(currentVolume) &&
+        currentVolume >= 0
+    ) {
+        return Math.min(100, currentVolume);
+    }
+
     return volume;
 }
-function getTrackTitle(track){
-    return track?.info?.title||'Tidak ada';
+
+function getTrackTitle(track) {
+    return track?.info?.title || 'Tidak ada';
 }
-function getTrackId(track){
-    return track?.info?.identifier||null;
+
+function getTrackId(track) {
+    return track?.info?.identifier || null;
 }
-function escapeHtml(value){
-    return String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'","&#039;");
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
 }
-function rememberTrack(track){
-    const id=getTrackId(track);
-    if(!id)return;
-    autoplayHistory.add(id);
-    if(autoplayHistory.size>MAX_HISTORY){
-        const oldest=autoplayHistory.values().next().value;
-        if(oldest)autoplayHistory.delete(oldest);
+
+function rememberTrack(track) {
+    const id = getTrackId(track);
+
+    if (!id) {
+        return;
     }
-}
-async function getAutoplayTrack(player,previousTrack){
-    if(!player||!previousTrack)return null;
-    const artist=previousTrack.info?.author?.trim();
-    const previousId=previousTrack.info?.identifier;
-    if(!artist)return null;
-    const queries=[
-        'ytsearch:'+artist+' top tracks',
-        'ytsearch:'+artist+' popular songs',
-        'ytsearch:'+artist+' best songs',
-        'ytsearch:'+artist
-    ];
-    for(const query of queries){
-        try{
-            console.log('[Autoplay] Search: '+query);
-            const result=await player.search({query},client.user);
-            if(!result?.tracks?.length)continue;
-            let candidates=result.tracks.filter(track=>{
-                const id=track?.info?.identifier;
-                return id&&id!==previousId&&!autoplayHistory.has(id);
-            });
-            if(!candidates.length){
-                candidates=result.tracks.filter(track=>{
-                    const id=track?.info?.identifier;
-                    return id&&id!==previousId;
-                });
-            }
-            if(!candidates.length)continue;
-            const pool=candidates.slice(0,5);
-            const selected=pool[Math.floor(Math.random()*pool.length)];
-            console.log('[Autoplay] Selected: '+getTrackTitle(selected));
-            return selected;
-        }catch(err){
-            console.warn('[Autoplay] Search failed:',err?.message||err);
+
+    autoplayHistory.add(id);
+
+    if (autoplayHistory.size > MAX_HISTORY) {
+        const oldest =
+            autoplayHistory.values().next().value;
+
+        if (oldest) {
+            autoplayHistory.delete(oldest);
         }
     }
+}
+
+/* =========================================================
+   AUTOPLAY SEARCH
+========================================================= */
+
+async function getAutoplayTrack(player, previousTrack) {
+    if (!player || !previousTrack) {
+        return null;
+    }
+
+    const artist =
+        previousTrack.info?.author?.trim();
+
+    const previousId =
+        previousTrack.info?.identifier;
+
+    if (!artist) {
+        console.log(
+            '[Autoplay] Artist tidak tersedia.'
+        );
+
+        return null;
+    }
+
+    const queries = [
+        `ytsearch:${artist} top tracks`,
+        `ytsearch:${artist} popular songs`,
+        `ytsearch:${artist} best songs`,
+        `ytsearch:${artist}`
+    ];
+
+    for (const query of queries) {
+        try {
+            console.log(
+                '[Autoplay] Search:',
+                query
+            );
+
+            const result = await player.search(
+                { query },
+                client.user
+            );
+
+            if (!result?.tracks?.length) {
+                continue;
+            }
+
+            let candidates =
+                result.tracks.filter(track => {
+                    const id =
+                        track?.info?.identifier;
+
+                    return (
+                        id &&
+                        id !== previousId &&
+                        !autoplayHistory.has(id)
+                    );
+                });
+
+            /*
+             * Kalau semua hasil sudah ada di history,
+             * tetap cari track lain selain track sebelumnya.
+             */
+            if (!candidates.length) {
+                candidates =
+                    result.tracks.filter(track => {
+                        const id =
+                            track?.info?.identifier;
+
+                        return (
+                            id &&
+                            id !== previousId
+                        );
+                    });
+            }
+
+            if (!candidates.length) {
+                continue;
+            }
+
+            /*
+             * Ambil maksimal 5 kandidat pertama
+             * lalu pilih random.
+             */
+            const pool =
+                candidates.slice(0, 5);
+
+            const selected =
+                pool[
+                    Math.floor(
+                        Math.random() * pool.length
+                    )
+                ];
+
+            console.log(
+                '[Autoplay] Selected:',
+                getTrackTitle(selected)
+            );
+
+            return selected;
+
+        } catch (error) {
+            console.warn(
+                '[Autoplay] Search failed:',
+                error?.message || error
+            );
+        }
+    }
+
     return null;
 }
-async function playAutoplay(player,previousTrack){
-    if(!isAutoplayEnabled||repeatMode!=='off'||!player||autoplayActionInProgress)return false;
-    autoplayActionInProgress=true;
-    try{
-        if(player.queue.tracks.length>0)return false;
-        const next=await getAutoplayTrack(player,previousTrack);
-        if(!next){
-            console.log('[Autoplay] Tidak menemukan rekomendasi.');
+
+/* =========================================================
+   AUTOPLAY PLAY
+========================================================= */
+
+async function playAutoplay(player, previousTrack) {
+    if (
+        !isAutoplayEnabled ||
+        repeatMode !== 'off' ||
+        !player ||
+        autoplayActionInProgress
+    ) {
+        return false;
+    }
+
+    autoplayActionInProgress = true;
+
+    try {
+        /*
+         * Jangan autoplay kalau masih ada queue.
+         */
+        if (player.queue.tracks.length > 0) {
             return false;
         }
+
+        const next =
+            await getAutoplayTrack(
+                player,
+                previousTrack
+            );
+
+        if (!next) {
+            console.log(
+                '[Autoplay] Tidak menemukan rekomendasi.'
+            );
+
+            return false;
+        }
+
         rememberTrack(next);
+
         player.queue.add(next);
+
         await player.play();
-        console.log('[Autoplay] Playing: '+getTrackTitle(next));
+
+        console.log(
+            '[Autoplay] Playing:',
+            getTrackTitle(next)
+        );
+
         return true;
-    }catch(err){
-        console.error('[Autoplay Error]:',err?.message||err);
+
+    } catch (error) {
+        console.error(
+            '[Autoplay Error]:',
+            error?.message || error
+        );
+
         return false;
-    }finally{
-        autoplayActionInProgress=false;
+
+    } finally {
+        autoplayActionInProgress = false;
     }
 }
-lavalink.on('trackEnd',async(player,track)=>{
-    if(!track)return;
-    console.log('[Track End] '+getTrackTitle(track));
-    if(repeatMode==='track'){
-        try{
-            await player.play({track:track});
-        }catch(err){
-            console.error('[Repeat Track Error]:',err?.message||err);
+
+/* =========================================================
+   TRACK END
+========================================================= */
+
+lavalink.on(
+    'trackEnd',
+    async (player, track) => {
+        if (!track) {
+            return;
         }
-        return;
-    }
-    if(repeatMode==='queue'){
-        try{
-            player.queue.add(track);
-            if(!player.playing&&!player.paused)await player.play();
-        }catch(err){
-            console.error('[Repeat Queue Error]:',err?.message||err);
+
+        console.log(
+            '[Track End]',
+            getTrackTitle(track)
+        );
+
+        /*
+         * REPEAT TRACK
+         */
+        if (repeatMode === 'track') {
+            try {
+                await player.play({
+                    track
+                });
+            } catch (error) {
+                console.error(
+                    '[Repeat Track Error]:',
+                    error?.message || error
+                );
+            }
+
+            return;
         }
-        return;
+
+        /*
+         * REPEAT QUEUE
+         */
+        if (repeatMode === 'queue') {
+            try {
+                player.queue.add(track);
+
+                if (
+                    !player.playing &&
+                    !player.paused
+                ) {
+                    await player.play();
+                }
+
+            } catch (error) {
+                console.error(
+                    '[Repeat Queue Error]:',
+                    error?.message || error
+                );
+            }
+
+            return;
+        }
+
+        /*
+         * Kalau masih ada queue,
+         * jangan jalankan autoplay.
+         */
+        if (player.queue.tracks.length > 0) {
+            return;
+        }
+
+        /*
+         * AUTOPLAY
+         */
+        if (isAutoplayEnabled) {
+            await playAutoplay(
+                player,
+                track
+            );
+        } else {
+            console.log(
+                '[Track End] Queue kosong, autoplay OFF.'
+            );
+        }
     }
-    if(player.queue.tracks.length>0)return;
-    if(isAutoplayEnabled)await playAutoplay(player,track);
-    else console.log('[Track End] Queue kosong, autoplay OFF.');
+);
+
+/* =========================================================
+   RAW DISCORD VOICE DATA
+========================================================= */
+
+client.on('raw', data => {
+    try {
+        lavalink.sendRawData(data);
+    } catch (error) {
+        console.warn(
+            '[Lavalink Raw Error]:',
+            error?.message || error
+        );
+    }
 });
-client.on('raw',data=>lavalink.sendRawData(data));
-async function connectToChannel(channelId){
-    try{
-        const channel=await client.channels.fetch(channelId);
-        if(!channel?.isVoice())return{success:false,message:'Bukan Voice Channel!'};
-        let player=lavalink.getPlayer(channel.guild.id);
-        if(player){
-            try{await player.disconnect();}catch(_){}
-            try{await player.destroy();}catch(_){}
+
+/* =========================================================
+   CONNECT VOICE
+========================================================= */
+
+async function connectToChannel(channelId) {
+    try {
+        const channel =
+            await client.channels.fetch(channelId);
+
+        if (!channel) {
+            return {
+                success: false,
+                message: 'Channel tidak ditemukan!'
+            };
         }
-        player=await lavalink.createPlayer({
-            guildId:channel.guild.id,
-            voiceChannelId:channel.id,
-            textChannelId:channel.id,
-            selfDeaf:false,
-            selfMute:false,
-            volume:volume
-        });
+
+        if (!channel.isVoice()) {
+            return {
+                success: false,
+                message: 'Bukan Voice Channel!'
+            };
+        }
+
+        /*
+         * Pastikan node Lavalink tersedia.
+         */
+        const node =
+            lavalink.nodeManager.nodes.get(
+                LAVALINK_ID
+            );
+
+        if (!node || !node.connected) {
+            console.warn(
+                '[Voice] Lavalink node belum tersedia.'
+            );
+
+            return {
+                success: false,
+                message:
+                    'Lavalink belum terhubung!'
+            };
+        }
+
+        /*
+         * Destroy player lama.
+         */
+        let player =
+            lavalink.getPlayer(
+                channel.guild.id
+            );
+
+        if (player) {
+            try {
+                await player.disconnect();
+            } catch (_) {}
+
+            try {
+                await player.destroy();
+            } catch (_) {}
+        }
+
+        /*
+         * Buat player baru.
+         */
+        player =
+            await lavalink.createPlayer({
+                guildId: channel.guild.id,
+                voiceChannelId: channel.id,
+                textChannelId: channel.id,
+
+                selfDeaf: false,
+                selfMute: false,
+
+                volume
+            });
+
         await player.connect();
-        try{await player.setVolume(volume);}catch(err){
-            console.warn('[Volume] Initial set failed:',err?.message||err);
+
+        try {
+            await player.setVolume(volume);
+        } catch (error) {
+            console.warn(
+                '[Volume] Initial set failed:',
+                error?.message || error
+            );
         }
-        currentVoiceChannel=channel;
-        savedVoiceChannelId=channel.id;
-        console.log('[Voice] Connected: '+channel.name);
-        return{success:true};
-    }catch(err){
-        console.error('[Voice] Connect error:',err?.message||err);
-        return{success:false,message:err?.message||'Unknown error'};
+
+        currentVoiceChannel = channel;
+        savedVoiceChannelId = channel.id;
+
+        console.log(
+            '[Voice] Connected:',
+            channel.name
+        );
+
+        return {
+            success: true
+        };
+
+    } catch (error) {
+        console.error(
+            '[Voice] Connect error:',
+            error?.message || error
+        );
+
+        return {
+            success: false,
+            message:
+                error?.message ||
+                'Unknown error'
+        };
     }
 }
-async function leaveChannel(){
-    if(!currentVoiceChannel)return;
-    try{
-        const player=lavalink.getPlayer(currentVoiceChannel.guild.id);
-        if(player){
-            try{await player.stop();}catch(_){}
-            try{await player.disconnect();}catch(_){}
-            try{await player.destroy();}catch(_){}
+
+/* =========================================================
+   LEAVE CHANNEL
+========================================================= */
+
+async function leaveChannel() {
+    try {
+        if (currentVoiceChannel) {
+            const player =
+                lavalink.getPlayer(
+                    currentVoiceChannel.guild.id
+                );
+
+            if (player) {
+                try {
+                    await player.disconnect();
+                } catch (_) {}
+
+                try {
+                    await player.destroy();
+                } catch (_) {}
+            }
         }
-    }catch(err){
-        console.error('[Voice] Leave error:',err?.message||err);
+    } catch (error) {
+        console.warn(
+            '[Voice] Leave error:',
+            error?.message || error
+        );
     }
-    currentVoiceChannel=null;
-    savedVoiceChannelId='';
-    autoplayHistory.clear();
-    autoplayActionInProgress=false;
-    manualSkipInProgress=false;
+
+    currentVoiceChannel = null;
+    savedVoiceChannelId = '';
+
+    console.log('[Voice] Disconnected.');
 }
-async function stopPlayer(player){
-    if(!player)return;
-    try{await player.stop();}catch(err){
-        console.warn('[Stop] stop() failed:',err?.message||err);
+
+/* =========================================================
+   STOP PLAYER
+========================================================= */
+
+async function stopPlayer(player) {
+    if (!player) {
+        return;
     }
-    try{
-        if(player.queue?.tracks)player.queue.tracks.splice(0,player.queue.tracks.length);
-    }catch(err){
-        console.warn('[Stop] Queue cleanup failed:',err?.message||err);
+
+    try {
+        player.queue.clear();
+    } catch (_) {}
+
+    try {
+        await player.stopPlaying();
+    } catch (_) {
+        try {
+            await player.stop();
+        } catch (_) {}
     }
-    autoplayActionInProgress=false;
-    manualSkipInProgress=false;
-    console.log('[Stop] Playback stopped.');
 }
-async function setPlayerVolume(player,requestedVolume){
-    if(!player)return false;
-    let newVolume=Number(requestedVolume);
-    if(!Number.isFinite(newVolume))return false;
-    newVolume=Math.round(newVolume);
-    newVolume=Math.max(0,Math.min(100,newVolume));
-    try{
+
+/* =========================================================
+   VOLUME
+========================================================= */
+
+async function setPlayerVolume(
+    player,
+    requestedVolume
+) {
+    if (!player) {
+        return;
+    }
+
+    let newVolume =
+        Number(requestedVolume);
+
+    if (!Number.isFinite(newVolume)) {
+        return;
+    }
+
+    newVolume =
+        Math.max(
+            0,
+            Math.min(100, Math.round(newVolume))
+        );
+
+    volume = newVolume;
+
+    try {
         await player.setVolume(newVolume);
-        volume=newVolume;
-        return true;
-    }catch(err){
-        console.error('[Volume Error]:',err?.message||err);
-        return false;
+    } catch (error) {
+        console.error(
+            '[Volume Error]:',
+            error?.message || error
+        );
     }
 }
-app.get('/api/state',(req,res)=>{
-    try{
-        const player=getCurrentPlayer();
-        const current=player?.queue?.current||null;
-        const tracks=player?.queue?.tracks||[];
-        res.json({
-            connected:Boolean(currentVoiceChannel),
-            voiceChannel:currentVoiceChannel?{
-                id:currentVoiceChannel.id,
-                name:currentVoiceChannel.name,
-                guildName:currentVoiceChannel.guild?.name||''
-            }:null,
-            playing:Boolean(player?.playing),
-            paused:Boolean(player?.paused),
-            current:current?{
-                title:getTrackTitle(current),
-                author:current.info?.author||'',
-                identifier:current.info?.identifier||''
-            }:null,
-            queue:tracks.map((track,index)=>({
-                index,
-                title:getTrackTitle(track),
-                author:track.info?.author||''
-            })),
-            queueLength:tracks.length,
-            volume:getPlayerVolume(player),
-            autoplay:isAutoplayEnabled,
-            repeat:repeatMode
-        });
-    }catch(err){
-        console.error('[State Error]:',err?.message||err);
-        res.status(500).json({error:true});
-    }
+
+/* =========================================================
+   API STATE
+========================================================= */
+
+app.get('/api/state', (req, res) => {
+    const player =
+        getCurrentPlayer();
+
+    const current =
+        player?.queue?.current || null;
+
+    res.json({
+        connected: Boolean(currentVoiceChannel),
+
+        voiceChannel: currentVoiceChannel
+            ? {
+                  id: currentVoiceChannel.id,
+                  name: currentVoiceChannel.name
+              }
+            : null,
+
+        playing: Boolean(
+            player?.playing
+        ),
+
+        paused: Boolean(
+            player?.paused
+        ),
+
+        current: current
+            ? {
+                  title:
+                      current.info?.title ||
+                      'Tidak ada',
+                  author:
+                      current.info?.author ||
+                      '',
+                  identifier:
+                      current.info?.identifier ||
+                      null,
+                  uri:
+                      current.info?.uri ||
+                      null,
+                  duration:
+                      current.info?.duration ||
+                      0,
+                  position:
+                      player?.position ||
+                      0
+              }
+            : null,
+
+        queue:
+            player?.queue?.tracks?.map(
+                (track, index) => ({
+                    index,
+                    title:
+                        track.info?.title ||
+                        'Tidak ada',
+                    author:
+                        track.info?.author ||
+                        '',
+                    identifier:
+                        track.info?.identifier ||
+                        null,
+                    duration:
+                        track.info?.duration ||
+                        0
+                })
+            ) || [],
+
+        volume: getPlayerVolume(player),
+
+        autoplay:
+            isAutoplayEnabled,
+
+        repeat:
+            repeatMode,
+
+        savedVoiceChannelId
+    });
 });
-function renderDashboard(){
-    const player=getCurrentPlayer();
-    const current=player?.queue?.current?.info?.title||'Tidak ada';
-    const currentVolume=getPlayerVolume(player);
-    let queue='<li class="empty-queue">Antrean kosong</li>';
-    if(player?.queue?.tracks?.length){
-        queue=player.queue.tracks.map((song,i)=>{
-            return '<li class="queue-item">'+
-                '<div class="queue-title">'+
-                '<span class="queue-number">'+(i+1)+'.</span>'+
-                '<span class="queue-song">'+escapeHtml(getTrackTitle(song))+'</span>'+
-                '</div>'+
-                '<form action="/api/delete-queue-item" method="POST">'+
-                '<input type="hidden" name="index" value="'+i+'">'+
-                '<button class="danger small" type="submit">X</button>'+
-                '</form>'+
-                '</li>';
-        }).join('');
-    }
-    const voiceStatus=currentVoiceChannel?
-        '<span style="color:#57f287">'+escapeHtml(currentVoiceChannel.name)+' ('+escapeHtml(currentVoiceChannel.guild.name)+')</span>':
-        '<span style="color:#ed4245">Belum Terhubung</span>';
-    const leaveButton=currentVoiceChannel?
-        '<form action="/api/leave" method="POST"><button class="danger">Leave Voice Channel</button></form>':'';
-    const loopTrackClass=repeatMode==='track'?'active':'alt';
-    const loopQueueClass=repeatMode==='queue'?'active':'alt';
-    const autoplayClass=isAutoplayEnabled?'active':'alt';
-    const loopTrackText=repeatMode==='track'?'ON':'OFF';
-    const loopQueueText=repeatMode==='queue'?'ON':'OFF';
-    const autoplayText=isAutoplayEnabled?'ON':'OFF';
-    return '<!DOCTYPE html>'+
-'<html lang="id">'+
-'<head>'+
-'<meta charset="UTF-8">'+
-'<meta name="viewport" content="width=device-width,initial-scale=1">'+
-'<title>Voicecord Controller</title>'+
-'<style>'+
-'*{box-sizing:border-box}'+
-'body{font-family:Arial,sans-serif;background:#0f1015;color:#e1e1e6;padding:20px;max-width:520px;margin:auto}'+
-'.card{background:#181920;padding:18px;border-radius:12px;margin-bottom:16px;border:1px solid #282a36}'+
-'h2,h3{margin-top:0;color:#fff}'+
-'input,button{padding:11px;margin:5px 0;width:100%;border:0;border-radius:8px;font-size:14px}'+
-'input{background:#222431;color:#fff;border:1px solid #323546}'+
-'button{background:#5865f2;color:#fff;font-weight:bold;cursor:pointer;transition:opacity .15s,transform .05s}'+
-'button:hover{opacity:.9}'+
-'button:active{transform:scale(.98)}'+
-'button.alt{background:#2b2d3c}'+
-'button.danger{background:#ed4245}'+
-'button.active{background:#57f287;color:#000}'+
-'button.small{width:auto;padding:5px 9px;margin:0}'+
-'.controls{display:flex;gap:8px;margin-top:6px}'+
-'.controls form{flex:1;min-width:0}'+
-'.status{font-size:13px;color:#aaa}'+
-'.current{color:#5865f2;font-weight:bold;font-size:16px;word-break:break-word}'+
-'.play-search{margin-bottom:6px}'+
-'.play-buttons{display:flex;gap:8px}'+
-'.play-buttons form{margin:0}'+
-'.play-buttons .play-submit{flex:1}'+
-'.play-buttons .stop-submit{flex:0 0 85px}'+
-'.play-buttons button{height:100%}'+
-'.volume-box{margin-top:14px;background:#222431;padding:12px;border-radius:10px}'+
-'.volume-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}'+
-'.volume-value{color:#57f287;font-weight:bold}'+
-'input[type="range"]{width:100%;margin:0;padding:0;accent-color:#5865f2;cursor:pointer}'+
-'.queue{padding:0;list-style:none;margin:0}'+
-'.queue-item{display:flex;justify-content:space-between;align-items:center;margin:7px 0;gap:8px;background:#222431;padding:8px;border-radius:7px}'+
-'.queue-title{display:flex;gap:6px;min-width:0;flex:1}'+
-'.queue-number{color:#888;flex-shrink:0}'+
-'.queue-song{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'+
-'.empty-queue{color:#777;padding:8px 0}'+
-'@media(max-width:400px){body{padding:12px}.play-buttons .stop-submit{flex:0 0 72px}}'+
-'</style>'+
-'</head>'+
-'<body>'+
-'<h2>Voicecord Controller</h2>'+
-'<div class="card">'+
-'<h3>Voice Channel</h3>'+
-'<p class="status">Status: <strong id="voice-status">'+voiceStatus+'</strong></p>'+
-'<form action="/api/connect" method="POST">'+
-'<input name="channelId" placeholder="Voice Channel ID" value="'+escapeHtml(savedVoiceChannelId)+'" required>'+
-'<button class="alt">Set / Pindah Voice Channel</button>'+
-'</form>'+
-leaveButton+
-'</div>'+
-'<div class="card">'+
-'<h3>Music Player</h3>'+
-'<p class="status">Sedang Diputar:</p>'+
-'<p class="current" id="current-track">'+escapeHtml(current)+'</p>'+
-'<div class="volume-box">'+
-'<div class="volume-header"><span>🔊 Volume</span><span class="volume-value" id="volume-value">'+currentVolume+'%</span></div>'+
-'<input id="volume-slider" type="range" min="0" max="100" value="'+currentVolume+'" step="1">'+
-'</div>'+
-'<form action="/api/play" method="POST" class="play-search">'+
-'<input name="query" placeholder="Judul / YouTube / Spotify / SoundCloud" required>'+
-'</form>'+
-'<div class="play-buttons">'+
-'<form action="/api/play" method="POST" class="play-submit">'+
-'<input type="hidden" id="play-query" name="query" value="">'+
-'<button>▶ Play / Add Queue</button>'+
-'</form>'+
-'<form action="/api/stop" method="POST" class="stop-submit">'+
-'<button class="danger">⏹ Stop</button>'+
-'</form>'+
-'</div>'+
-'<div class="controls">'+
-'<form action="/api/pause" method="POST"><button class="alt">⏸ Pause</button></form>'+
-'<form action="/api/resume" method="POST"><button class="alt">▶ Resume</button></form>'+
-'<form action="/api/skip" method="POST"><button class="alt">⏭ Skip</button></form>'+
-'</div>'+
-'<div class="controls">'+
-'<form action="/api/loop-track" method="POST"><button id="loop-track-button" class="'+loopTrackClass+'">Loop Track: '+loopTrackText+'</button></form>'+
-'<form action="/api/loop-queue" method="POST"><button id="loop-queue-button" class="'+loopQueueClass+'">Loop Queue: '+loopQueueText+'</button></form>'+
-'</div>'+
-'<form action="/api/toggle-autoplay" method="POST"><button id="autoplay-button" class="'+autoplayClass+'">Autoplay: '+autoplayText+'</button></form>'+
-'</div>'+
-'<div class="card">'+
-'<h3>Antrean Lagu</h3>'+
-'<ol class="queue" id="queue-list">'+queue+'</ol>'+
-'</div>'+
-'<script>'+
-'const searchForm=document.querySelector(".play-search");'+
-'const playForm=document.querySelector(".play-submit");'+
-'const searchInput=searchForm?.querySelector("input[name=query]");'+
-'const playQuery=document.getElementById("play-query");'+
-'if(searchInput&&playQuery)searchInput.addEventListener("input",()=>playQuery.value=searchInput.value);'+
-'if(searchForm)searchForm.addEventListener("submit",event=>{event.preventDefault();if(searchInput?.value?.trim()){playQuery.value=searchInput.value.trim();playForm.submit()}});'+
-'let volumeTimer=null;let volumeRequest=null;'+
-'const volumeSlider=document.getElementById("volume-slider");'+
-'const volumeValue=document.getElementById("volume-value");'+
-'if(volumeSlider)volumeSlider.addEventListener("input",()=>{const value=Number(volumeSlider.value);if(volumeValue)volumeValue.textContent=value+"%";clearTimeout(volumeTimer);volumeTimer=setTimeout(async()=>{try{if(volumeRequest)volumeRequest.abort();volumeRequest=new AbortController();await fetch("/api/volume",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({volume:value}),signal:volumeRequest.signal})}catch(err){if(err.name!=="AbortError")console.warn("Volume update failed:",err)}},80)});'+
-'function escapeHtml(value){const div=document.createElement("div");div.textContent=value??"";return div.innerHTML}'+
-'function renderQueue(queue){const list=document.getElementById("queue-list");if(!list)return;if(!queue||queue.length===0){list.innerHTML="<li class=\\"empty-queue\\">Antrean kosong</li>";return}list.innerHTML=queue.map(song=>"<li class=\\"queue-item\\"><div class=\\"queue-title\\"><span class=\\"queue-number\\">"+(song.index+1)+".</span><span class=\\"queue-song\\">"+escapeHtml(song.title)+"</span></div><form action=\\"/api/delete-queue-item\\" method=\\"POST\\"><input type=\\"hidden\\" name=\\"index\\" value=\\""+song.index+"\\"><button class=\\"danger small\\" type=\\"submit\\">X</button></form></li>").join("")}'+
-'function updateButton(id,label,active){const button=document.getElementById(id);if(!button)return;button.textContent=label+": "+(active?"ON":"OFF");button.className=active?"active":"alt"}'+
-'async function updateState(){try{const response=await fetch("/api/state",{cache:"no-store"});if(!response.ok)return;const state=await response.json();const current=document.getElementById("current-track");if(current)current.textContent=state.current?.title||"Tidak ada";const slider=document.getElementById("volume-slider");const volumeLabel=document.getElementById("volume-value");if(slider&&document.activeElement!==slider)slider.value=state.volume;if(volumeLabel)volumeLabel.textContent=state.volume+"%";renderQueue(state.queue);updateButton("loop-track-button","Loop Track",state.repeat==="track");updateButton("loop-queue-button","Loop Queue",state.repeat==="queue");updateButton("autoplay-button","Autoplay",state.autoplay);const voiceStatus=document.getElementById("voice-status");if(voiceStatus){if(state.connected)voiceStatus.innerHTML="<span style=\\"color:#57f287\\">"+escapeHtml(state.voiceChannel?.name||"")+" ("+escapeHtml(state.voiceChannel?.guildName||"")+")</span>";else voiceStatus.innerHTML="<span style=\\"color:#ed4245\\">Belum Terhubung</span>"}}catch(err){console.warn("State update failed:",err)}}'+
-'updateState();setInterval(updateState,1000);'+
-'</script>'+
-'</body>'+
-'</html>';
+
+/* =========================================================
+   DASHBOARD
+========================================================= */
+
+function renderDashboard() {
+    return `
+<!DOCTYPE html>
+
+<html lang="id">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+>
+
+<title>Botave Music Controller</title>
+
+<style>
+
+* {
+    box-sizing: border-box;
 }
-app.use(express.json());
-app.use(express.urlencoded({extended:true}));
-app.get('/favicon.ico',(_,res)=>res.status(204).end());
-app.get('/',(_,res)=>res.send(renderDashboard()));
-app.post('/api/connect',async(req,res)=>{
-    if(req.body.channelId)await connectToChannel(req.body.channelId.trim());
-    res.redirect('/');
-});
-app.post('/api/leave',async(_,res)=>{
-    await leaveChannel();
-    res.redirect('/');
-});
-app.post('/api/play',async(req,res)=>{
-    const query=req.body.query?.trim();
-    if(!query)return res.redirect('/');
-    if(!currentVoiceChannel)return res.send('<script>alert("Atur Voice Channel ID terlebih dahulu!");location.href="/";</script>');
-    try{
-        let player=lavalink.getPlayer(currentVoiceChannel.guild.id);
-        if(!player){
-            await connectToChannel(currentVoiceChannel.id);
-            player=lavalink.getPlayer(currentVoiceChannel.guild.id);
+
+body {
+    margin: 0;
+    padding: 0;
+
+    background:
+        linear-gradient(
+            135deg,
+            #0f172a,
+            #111827
+        );
+
+    color: #f8fafc;
+
+    font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
+
+    min-height: 100vh;
+}
+
+.container {
+    width: min(1000px, 94%);
+    margin: 30px auto;
+}
+
+.card {
+    background: rgba(15, 23, 42, .94);
+
+    border: 1px solid
+        rgba(255,255,255,.08);
+
+    border-radius: 18px;
+
+    padding: 20px;
+
+    margin-bottom: 18px;
+
+    box-shadow:
+        0 10px 40px
+        rgba(0,0,0,.25);
+}
+
+h1 {
+    margin-top: 0;
+}
+
+input,
+button {
+    font: inherit;
+}
+
+input {
+    width: 100%;
+
+    padding: 12px;
+
+    border-radius: 10px;
+
+    border: 1px solid
+        rgba(255,255,255,.12);
+
+    background: #020617;
+
+    color: white;
+
+    outline: none;
+}
+
+button {
+    border: none;
+
+    border-radius: 10px;
+
+    padding: 11px 15px;
+
+    margin: 4px;
+
+    cursor: pointer;
+
+    background: #334155;
+
+    color: white;
+
+    transition: .15s;
+}
+
+button:hover {
+    transform: translateY(-1px);
+
+    filter: brightness(1.15);
+}
+
+.primary {
+    background: #2563eb;
+}
+
+.success {
+    background: #16a34a;
+}
+
+.danger {
+    background: #dc2626;
+}
+
+.warning {
+    background: #d97706;
+}
+
+.controls {
+    display: flex;
+
+    flex-wrap: wrap;
+
+    gap: 5px;
+
+    margin-top: 12px;
+}
+
+.status {
+    padding: 12px;
+
+    border-radius: 10px;
+
+    background: #020617;
+
+    margin-top: 10px;
+}
+
+.track {
+    font-size: 20px;
+
+    font-weight: bold;
+}
+
+.sub {
+    color: #94a3b8;
+
+    margin-top: 5px;
+}
+
+.queue-item {
+    display: flex;
+
+    justify-content: space-between;
+
+    align-items: center;
+
+    gap: 10px;
+
+    padding: 10px;
+
+    border-bottom: 1px solid
+        rgba(255,255,255,.06);
+}
+
+.row {
+    display: flex;
+
+    gap: 10px;
+
+    align-items: center;
+}
+
+.row input {
+    flex: 1;
+}
+
+.slider {
+    width: 100%;
+}
+
+.small {
+    font-size: 13px;
+
+    color: #94a3b8;
+}
+
+.badge {
+    display: inline-block;
+
+    padding: 5px 9px;
+
+    border-radius: 999px;
+
+    background: #334155;
+
+    font-size: 12px;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<div class="card">
+
+<h1>🎵 Botave Music Controller</h1>
+
+<div class="small">
+Discord Music Controller
+</div>
+
+</div>
+
+<div class="card">
+
+<h3>Voice Channel</h3>
+
+<form
+    method="POST"
+    action="/api/connect"
+>
+
+<div class="row">
+
+<input
+    type="text"
+    name="channelId"
+    placeholder="Masukkan Voice Channel ID"
+    value="${escapeHtml(savedVoiceChannelId)}"
+>
+
+<button
+    class="primary"
+    type="submit"
+>
+Connect
+</button>
+
+</div>
+
+</form>
+
+<form
+    method="POST"
+    action="/api/leave"
+>
+
+<button
+    class="danger"
+    type="submit"
+>
+Leave
+</button>
+
+</form>
+
+</div>
+
+<div class="card">
+
+<h3>Now Playing</h3>
+
+<div
+    id="nowPlaying"
+    class="status"
+>
+Loading...
+</div>
+
+<div class="controls">
+
+<form
+    method="POST"
+    action="/api/pause"
+>
+
+<button
+    class="warning"
+    type="submit"
+>
+⏸ Pause
+</button>
+
+</form>
+
+<form
+    method="POST"
+    action="/api/resume"
+>
+
+<button
+    class="success"
+    type="submit"
+>
+▶ Resume
+</button>
+
+</form>
+
+<form
+    method="POST"
+    action="/api/skip"
+>
+
+<button
+    class="primary"
+    type="submit"
+>
+⏭ Skip
+</button>
+
+</form>
+
+<form
+    method="POST"
+    action="/api/stop"
+>
+
+<button
+    class="danger"
+    type="submit"
+>
+⏹ Stop
+</button>
+
+</form>
+
+</div>
+
+</div>
+
+<div class="card">
+
+<h3>Play</h3>
+
+<form
+    method="POST"
+    action="/api/play"
+>
+
+<div class="row">
+
+<input
+    type="text"
+    name="query"
+    placeholder="YouTube URL / judul lagu"
+>
+
+<button
+    class="primary"
+    type="submit"
+>
+Play
+</button>
+
+</div>
+
+</form>
+
+</div>
+
+<div class="card">
+
+<h3>Volume</h3>
+
+<form
+    method="POST"
+    action="/api/volume"
+>
+
+<input
+    class="slider"
+    type="range"
+    name="volume"
+    min="0"
+    max="100"
+    value="${volume}"
+    oninput="volumeValue.innerText=this.value"
+>
+
+<div>
+Volume:
+<span id="volumeValue">
+${volume}
+</span>
+</div>
+
+<button
+    class="primary"
+    type="submit"
+>
+Set Volume
+</button>
+
+</form>
+
+</div>
+
+<div class="card">
+
+<h3>Modes</h3>
+
+<div class="controls">
+
+<form
+    method="POST"
+    action="/api/loop-track"
+>
+
+<button
+    class="warning"
+    type="submit"
+>
+🔂 Repeat Track
+</button>
+
+</form>
+
+<form
+    method="POST"
+    action="/api/loop-queue"
+>
+
+<button
+    class="warning"
+    type="submit"
+>
+🔁 Repeat Queue
+</button>
+
+</form>
+
+<form
+    method="POST"
+    action="/api/toggle-autoplay"
+>
+
+<button
+    class="success"
+    type="submit"
+>
+🤖 Toggle Autoplay
+</button>
+
+</form>
+
+</div>
+
+<div
+    id="modeStatus"
+    class="status"
+>
+Loading...
+</div>
+
+</div>
+
+<div class="card">
+
+<h3>Queue</h3>
+
+<div id="queue">
+Loading...
+</div>
+
+</div>
+
+</div>
+
+<script>
+
+async function refreshState() {
+
+    try {
+
+        const response =
+            await fetch('/api/state');
+
+        const state =
+            await response.json();
+
+        const nowPlaying =
+            document.getElementById(
+                'nowPlaying'
+            );
+
+        const modeStatus =
+            document.getElementById(
+                'modeStatus'
+            );
+
+        const queue =
+            document.getElementById(
+                'queue'
+            );
+
+        if (state.current) {
+
+            nowPlaying.innerHTML = \`
+                <div class="track">
+                    🎵 \${escapeClient(
+                        state.current.title
+                    )}
+                </div>
+
+                <div class="sub">
+                    \${escapeClient(
+                        state.current.author || ''
+                    )}
+                </div>
+
+                <div class="sub">
+                    Status:
+                    \${state.playing
+                        ? '▶ Playing'
+                        : state.paused
+                            ? '⏸ Paused'
+                            : '⏹ Stopped'}
+                </div>
+            \`;
+
+        } else {
+
+            nowPlaying.innerHTML =
+                'Tidak ada lagu yang sedang diputar.';
         }
-        if(!player)return res.redirect('/');
-        const result=await player.search({query},client.user);
-        if(result?.tracks?.length){
-            const track=result.tracks[0];
-            player.queue.add(track);
-            console.log('[Play] '+getTrackTitle(track));
-            if(!player.playing&&!player.paused)await player.play();
+
+        modeStatus.innerHTML = \`
+            Autoplay:
+            <span class="badge">
+                \${state.autoplay
+                    ? 'ON'
+                    : 'OFF'}
+            </span>
+
+            &nbsp;
+
+            Repeat:
+            <span class="badge">
+                \${escapeClient(
+                    state.repeat
+                )}
+            </span>
+
+            &nbsp;
+
+            Volume:
+            <span class="badge">
+                \${state.volume}
+            </span>
+        \`;
+
+        if (!state.queue.length) {
+
+            queue.innerHTML =
+                '<div class="small">Queue kosong.</div>';
+
+        } else {
+
+            queue.innerHTML =
+                state.queue.map(
+                    (track, index) => \`
+                        <div class="queue-item">
+
+                            <div>
+                                <b>
+                                    \${index + 1}.
+                                    \${escapeClient(
+                                        track.title
+                                    )}
+                                </b>
+
+                                <div class="small">
+                                    \${escapeClient(
+                                        track.author || ''
+                                    )}
+                                </div>
+                            </div>
+
+                            <form
+                                method="POST"
+                                action="/api/delete-queue-item"
+                            >
+
+                                <input
+                                    type="hidden"
+                                    name="index"
+                                    value="\${index}"
+                                >
+
+                                <button
+                                    class="danger"
+                                    type="submit"
+                                >
+                                    Delete
+                                </button>
+
+                            </form>
+
+                        </div>
+                    \`
+                ).join('');
         }
-    }catch(err){
-        console.error('[Play Error]:',err?.message||err);
+
+    } catch (error) {
+
+        console.error(error);
+
     }
-    res.redirect('/');
-});
-app.post('/api/pause',async(_,res)=>{
-    const player=getCurrentPlayer();
-    if(player){
-        try{await player.pause();}catch(err){console.error('[Pause Error]:',err?.message||err)}
+
+}
+
+function escapeClient(value) {
+
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+
+}
+
+refreshState();
+
+setInterval(
+    refreshState,
+    2000
+);
+
+</script>
+
+</body>
+
+</html>
+`;
+}
+
+/* =========================================================
+   FAVICON
+========================================================= */
+
+app.get(
+    '/favicon.ico',
+    (_, res) =>
+        res.status(204).end()
+);
+
+/* =========================================================
+   DASHBOARD
+========================================================= */
+
+app.get(
+    '/',
+    (_, res) =>
+        res.send(
+            renderDashboard()
+        )
+);
+
+/* =========================================================
+   CONNECT
+========================================================= */
+
+app.post(
+    '/api/connect',
+    async (req, res) => {
+
+        const channelId =
+            req.body.channelId?.trim();
+
+        if (channelId) {
+            await connectToChannel(
+                channelId
+            );
+        }
+
+        res.redirect('/');
     }
-    res.redirect('/');
-});
-app.post('/api/resume',async(_,res)=>{
-    const player=getCurrentPlayer();
-    if(player){
-        try{await player.resume();}catch(err){console.error('[Resume Error]:',err?.message||err)}
+);
+
+/* =========================================================
+   LEAVE
+========================================================= */
+
+app.post(
+    '/api/leave',
+    async (_, res) => {
+
+        await leaveChannel();
+
+        res.redirect('/');
     }
-    res.redirect('/');
-});
-app.post('/api/skip',async(_,res)=>{
-    const player=getCurrentPlayer();
-    if(!player)return res.redirect('/');
-    if(manualSkipInProgress)return res.redirect('/');
-    manualSkipInProgress=true;
-    try{
-        const current=player.queue.current;
-        if(!current)return res.redirect('/');
-        if(player.queue.tracks.length>0){
-            console.log('[Skip] Next queue track.');
+);
+
+/* =========================================================
+   PLAY
+========================================================= */
+
+app.post(
+    '/api/play',
+    async (req, res) => {
+
+        const query =
+            req.body.query?.trim();
+
+        if (!query) {
+            return res.redirect('/');
+        }
+
+        if (!currentVoiceChannel) {
+
+            return res.send(`
+                <script>
+                    alert(
+                        "Atur Voice Channel ID terlebih dahulu!"
+                    );
+                    location.href="/";
+                </script>
+            `);
+        }
+
+        try {
+
+            let player =
+                lavalink.getPlayer(
+                    currentVoiceChannel.guild.id
+                );
+
+            if (!player) {
+
+                const result =
+                    await connectToChannel(
+                        currentVoiceChannel.id
+                    );
+
+                if (!result.success) {
+                    return res.redirect('/');
+                }
+
+                player =
+                    lavalink.getPlayer(
+                        currentVoiceChannel.guild.id
+                    );
+            }
+
+            if (!player) {
+                return res.redirect('/');
+            }
+
+            const result =
+                await player.search(
+                    { query },
+                    client.user
+                );
+
+            if (
+                result?.tracks?.length
+            ) {
+
+                const track =
+                    result.tracks[0];
+
+                player.queue.add(track);
+
+                console.log(
+                    '[Play]',
+                    getTrackTitle(track)
+                );
+
+                if (
+                    !player.playing &&
+                    !player.paused
+                ) {
+                    await player.play();
+                }
+            }
+
+        } catch (error) {
+
+            console.error(
+                '[Play Error]:',
+                error?.message || error
+            );
+        }
+
+        res.redirect('/');
+    }
+);
+
+/* =========================================================
+   PAUSE
+========================================================= */
+
+app.post(
+    '/api/pause',
+    async (_, res) => {
+
+        const player =
+            getCurrentPlayer();
+
+        if (!player) {
+            return res.redirect('/');
+        }
+
+        try {
+            await player.pause();
+        } catch (error) {
+            console.error(
+                '[Pause Error]:',
+                error?.message || error
+            );
+        }
+
+        res.redirect('/');
+    }
+);
+
+/* =========================================================
+   RESUME
+========================================================= */
+
+app.post(
+    '/api/resume',
+    async (_, res) => {
+
+        const player =
+            getCurrentPlayer();
+
+        if (!player) {
+            return res.redirect('/');
+        }
+
+        try {
+            await player.resume();
+        } catch (error) {
+            console.error(
+                '[Resume Error]:',
+                error?.message || error
+            );
+        }
+
+        res.redirect('/');
+    }
+);
+
+/* =========================================================
+   SKIP
+========================================================= */
+
+app.post(
+    '/api/skip',
+    async (_, res) => {
+
+        const player =
+            getCurrentPlayer();
+
+        if (!player) {
+            return res.redirect('/');
+        }
+
+        if (manualSkipInProgress) {
+            return res.redirect('/');
+        }
+
+        manualSkipInProgress = true;
+
+        try {
+
+            const current =
+                player.queue.current;
+
+            if (!current) {
+                return res.redirect('/');
+            }
+
+            /*
+             * Ada queue berikutnya.
+             */
+            if (
+                player.queue.tracks.length > 0
+            ) {
+
+                console.log(
+                    '[Skip] Next queue track.'
+                );
+
+                await player.skip();
+
+                return res.redirect('/');
+            }
+
+            /*
+             * Queue kosong + autoplay OFF.
+             */
+            if (!isAutoplayEnabled) {
+
+                console.log(
+                    '[Skip] Queue kosong + autoplay OFF.'
+                );
+
+                await stopPlayer(player);
+
+                return res.redirect('/');
+            }
+
+            /*
+             * Queue kosong + autoplay ON.
+             */
+            console.log(
+                '[Skip] Searching autoplay next after:',
+                getTrackTitle(current)
+            );
+
+            const next =
+                await getAutoplayTrack(
+                    player,
+                    current
+                );
+
+            if (!next) {
+
+                console.log(
+                    '[Skip] Recommendation tidak ditemukan.'
+                );
+
+                await stopPlayer(player);
+
+                return res.redirect('/');
+            }
+
+            rememberTrack(next);
+
+            player.queue.add(next);
+
+            console.log(
+                '[Skip] Autoplay Next:',
+                getTrackTitle(next)
+            );
+
+            /*
+             * Jangan langsung skip jika player
+             * sudah tidak punya current setelah track
+             * selesai.
+             */
             await player.skip();
-            return res.redirect('/');
+
+        } catch (error) {
+
+            console.error(
+                '[Skip Error]:',
+                error?.message || error
+            );
+
+        } finally {
+
+            setTimeout(() => {
+                manualSkipInProgress = false;
+            }, 500);
         }
-        if(!isAutoplayEnabled){
-            console.log('[Skip] Queue kosong + autoplay OFF.');
+
+        res.redirect('/');
+    }
+);
+
+/* =========================================================
+   STOP
+========================================================= */
+
+app.post(
+    '/api/stop',
+    async (_, res) => {
+
+        const player =
+            getCurrentPlayer();
+
+        if (player) {
             await stopPlayer(player);
+        }
+
+        res.redirect('/');
+    }
+);
+
+/* =========================================================
+   VOLUME
+========================================================= */
+
+app.post(
+    '/api/volume',
+    async (req, res) => {
+
+        const player =
+            getCurrentPlayer();
+
+        await setPlayerVolume(
+            player,
+            req.body.volume
+        );
+
+        res.redirect('/');
+    }
+);
+
+/* =========================================================
+   REPEAT TRACK
+========================================================= */
+
+app.post(
+    '/api/loop-track',
+    async (_, res) => {
+
+        if (repeatMode === 'track') {
+            repeatMode = 'off';
+        } else {
+            repeatMode = 'track';
+        }
+
+        console.log(
+            '[Repeat] Mode:',
+            repeatMode
+        );
+
+        res.redirect('/');
+    }
+);
+
+/* =========================================================
+   REPEAT QUEUE
+========================================================= */
+
+app.post(
+    '/api/loop-queue',
+    async (_, res) => {
+
+        if (repeatMode === 'queue') {
+            repeatMode = 'off';
+        } else {
+            repeatMode = 'queue';
+        }
+
+        console.log(
+            '[Repeat] Mode:',
+            repeatMode
+        );
+
+        res.redirect('/');
+    }
+);
+
+/* =========================================================
+   AUTOPLAY TOGGLE
+========================================================= */
+
+app.post(
+    '/api/toggle-autoplay',
+    async (_, res) => {
+
+        isAutoplayEnabled =
+            !isAutoplayEnabled;
+
+        console.log(
+            '[Autoplay]:',
+            isAutoplayEnabled
+                ? 'ON'
+                : 'OFF'
+        );
+
+        res.redirect('/');
+    }
+);
+
+/* =========================================================
+   DELETE QUEUE ITEM
+========================================================= */
+
+app.post(
+    '/api/delete-queue-item',
+    async (req, res) => {
+
+        const player =
+            getCurrentPlayer();
+
+        if (!player) {
             return res.redirect('/');
         }
-        console.log('[Skip] Searching autoplay next after: '+getTrackTitle(current));
-        const next=await getAutoplayTrack(player,current);
-        if(!next){
-            console.log('[Skip] Recommendation tidak ditemukan.');
-            await stopPlayer(player);
+
+        const index =
+            Number(req.body.index);
+
+        if (!Number.isInteger(index)) {
             return res.redirect('/');
         }
-        rememberTrack(next);
-        player.queue.add(next);
-        console.log('[Skip] Autoplay Next: '+getTrackTitle(next));
-        await player.skip();
-    }catch(err){
-        console.error('[Skip Error]:',err?.message||err);
-    }finally{
-        setTimeout(()=>{manualSkipInProgress=false},300);
+
+        try {
+
+            const tracks =
+                player.queue.tracks;
+
+            if (
+                index >= 0 &&
+                index < tracks.length
+            ) {
+
+                tracks.splice(
+                    index,
+                    1
+                );
+
+                console.log(
+                    '[Queue] Deleted index:',
+                    index
+                );
+            }
+
+        } catch (error) {
+
+            console.error(
+                '[Queue Delete Error]:',
+                error?.message || error
+            );
+        }
+
+        res.redirect('/');
     }
-    res.redirect('/');
-});
-app.post('/api/stop',async(_,res)=>{
-    const player=getCurrentPlayer();
-    if(player)await stopPlayer(player);
-    res.redirect('/');
-});
-app.post('/api/volume',async(req,res)=>{
-    const player=getCurrentPlayer();
-    if(!player)return res.status(400).json({success:false,message:'Player belum terhubung.'});
-    const requestedVolume=req.body?.volume;
-    const success=await setPlayerVolume(player,requestedVolume);
-    if(!success)return res.status(400).json({success:false,volume:getPlayerVolume(player)});
-    return res.json({success:true,volume:volume});
-});
-app.post('/api/loop-track',(req,res)=>{
-    repeatMode=repeatMode==='track'?'off':'track';
-    console.log('[Repeat] '+repeatMode);
-    res.redirect('/');
-});
-app.post('/api/loop-queue',(req,res)=>{
-    repeatMode=repeatMode==='queue'?'off':'queue';
-    console.log('[Repeat] '+repeatMode);
-    res.redirect('/');
-});
-app.post('/api/toggle-autoplay',(_,res)=>{
-    isAutoplayEnabled=!isAutoplayEnabled;
-    console.log('[Autoplay] '+(isAutoplayEnabled?'ON':'OFF'));
-    res.redirect('/');
-});
-app.post('/api/delete-queue-item',(req,res)=>{
-    const player=getCurrentPlayer();
-    const index=Number.parseInt(req.body.index,10);
-    if(player&&Number.isInteger(index)&&player.queue.tracks[index]){
-        const removed=player.queue.tracks.splice(index,1)[0];
-        console.log('[Queue] Removed: '+getTrackTitle(removed));
+);
+
+/* =========================================================
+   UNKNOWN ROUTES
+========================================================= */
+
+app.get(
+    '*',
+    (_, res) =>
+        res.send(
+            renderDashboard()
+        )
+);
+
+/* =========================================================
+   DISCORD READY
+========================================================= */
+
+client.on(
+    'ready',
+    async () => {
+
+        console.log(
+            'Logged in as',
+            client.user.tag
+        );
+
+        /*
+         * Update Discord client ID
+         * sebelum Lavalink init.
+         */
+        lavalink.options.client.id =
+            client.user.id;
+
+        lavalink.options.client.username =
+            client.user.username;
+
+        try {
+
+            await lavalink.init(
+                client.user
+            );
+
+            console.log(
+                '[Lavalink] Manager initialized.'
+            );
+
+        } catch (error) {
+
+            console.error(
+                '[Lavalink] Init error:',
+                error?.message || error
+            );
+        }
     }
-    res.redirect('/');
-});
-app.get('*',(_,res)=>res.send(renderDashboard()));
-client.on('ready',async()=>{
-    console.log('Logged in as '+client.user.tag);
-    lavalink.options.client.id=client.user.id;
-    try{
-        await lavalink.init(client.user);
-        console.log('[Lavalink] Manager initialized.');
-    }catch(err){
-        console.error('[Lavalink] Init error:',err?.message||err);
+);
+
+/* =========================================================
+   ERROR HANDLERS
+========================================================= */
+
+process.on(
+    'unhandledRejection',
+    reason => {
+        console.warn(
+            '[Unhandled Rejection]',
+            reason
+        );
     }
-});
-process.on('unhandledRejection',reason=>console.warn('[Unhandled Rejection]',reason));
-process.on('uncaughtException',err=>console.warn('[Uncaught Exception]',err?.message||err));
-app.listen(PORT,'0.0.0.0',()=>console.log('Web Controller berjalan di port '+PORT));
+);
+
+process.on(
+    'uncaughtException',
+    error => {
+        console.warn(
+            '[Uncaught Exception]',
+            error?.message || error
+        );
+    }
+);
+
+/* =========================================================
+   HTTP SERVER
+========================================================= */
+
+app.listen(
+    PORT,
+    '0.0.0.0',
+    () => {
+
+        console.log(
+            '======================================'
+        );
+
+        console.log(
+            'Web Controller berjalan di port',
+            PORT
+        );
+
+        console.log(
+            '======================================'
+        );
+    }
+);
+
+/* =========================================================
+   LOGIN
+========================================================= */
+
 client.login(TOKEN);
