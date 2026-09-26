@@ -1,29 +1,6 @@
-// Polyfill Web APIs untuk undici / play-dl
-const { Blob, File } = require('buffer');
-const { fetch, Headers, Request, Response, FormData } = require('undici');
-
-if (!globalThis.File) globalThis.File = File;
-if (!globalThis.Blob) globalThis.Blob = Blob;
-if (!globalThis.FormData) globalThis.FormData = FormData;
-if (!globalThis.fetch) {
-    globalThis.fetch = fetch;
-    globalThis.Headers = Headers;
-    globalThis.Request = Request;
-    globalThis.Response = Response;
-}
-
 const express = require('express');
 const { Client } = require('discord.js-selfbot-v13');
-const { 
-    joinVoiceChannel, 
-    createAudioPlayer, 
-    createAudioResource, 
-    AudioPlayerStatus,
-    VoiceConnectionStatus,
-    entersState,
-    NoSubscriberBehavior
-} = require('@discordjs/voice');
-const play = require('play-dl');
+const { LavalinkManager } = require('lavalink-client');
 
 // Patch Friend Source Flags Null Error pada discord.js-selfbot-v13
 const ClientUserSettingManager = require('discord.js-selfbot-v13/src/managers/ClientUserSettingManager');
@@ -46,91 +23,56 @@ if (!TOKEN) {
     process.exit(1);
 }
 
-// Fungsi Parser Cookie String ke Object / JSON untuk play-dl
-function parseCookieString(cookieStr) {
-    if (!cookieStr) return null;
-    const cookies = {};
-    cookieStr.split(';').forEach(cookie => {
-        const parts = cookie.split('=');
-        if (parts.length >= 2) {
-            const key = parts[0].trim();
-            const val = parts.slice(1).join('=').trim();
-            if (key) cookies[key] = val;
+// Inisialisasi Lavalink Manager menggunakan Node Publik Gratis & Stabil
+const lavalink = new LavalinkManager({
+    nodes: [
+        {
+            authorization: 'youshallnotpass',
+            host: 'lava-v4.ajieyp.com', // Public Lavalink Node v4
+            port: 443,
+            secure: true
         }
-    });
-    return cookies;
-}
-
-// Inisialisasi Cookie YouTube
-if (process.env.YT_COOKIE) {
-    try {
-        const parsedCookie = parseCookieString(process.env.YT_COOKIE);
-        play.setToken({
-            youtube: {
-                cookie: parsedCookie
-            }
-        });
-        console.log("YouTube Cookie berhasil diparse dan dimuat ke play-dl.");
-    } catch (err) {
-        console.error("Gagal memasang YouTube Cookie:", err.message);
-    }
-} else {
-    console.warn("PERINGATAN: YT_COOKIE belum dipasang di Railway Variables!");
-}
-
-// Inisialisasi Audio Player
-const audioPlayer = createAudioPlayer({
-    behaviors: {
-        noSubscriber: NoSubscriberBehavior.Play
+    ],
+    sendToShard: (guildId, payload) => {
+        const guild = client.guilds.cache.get(guildId);
+        if (guild) guild.shard.send(payload);
+    },
+    client: {
+        id: '100000000000000000'
     }
 });
 
-let queue = [];
-let isPlaying = false;
-let currentTrack = null;
 let savedVoiceChannelId = "";
 let currentVoiceChannel = null;
-let voiceConnection = null;
 
-// Menghubungkan ke Voice Channel
+// Forward event voice state Discord ke Lavalink
+client.on('raw', (d) => {
+    lavalink.sendRawData(d);
+});
+
 async function connectToChannel(channelId) {
     try {
         const channel = await client.channels.fetch(channelId);
         if (!channel || !channel.isVoice()) {
-            return { success: false, message: 'Channel tidak ditemukan atau bukan Voice Channel!' };
+            return { success: false, message: 'Channel tidak ditemukan!' };
         }
 
-        if (voiceConnection) {
-            try { voiceConnection.destroy(); } catch (e) {}
-        }
-
-        voiceConnection = joinVoiceChannel({
-            channelId: channel.id,
-            guildId: channel.guild.id,
-            adapterCreator: channel.guild.voiceAdapterCreator,
-            selfMute: false,
-            selfDeaf: false
-        });
-
-        voiceConnection.subscribe(audioPlayer);
         currentVoiceChannel = channel;
         savedVoiceChannelId = channel.id;
-        console.log(`Bot terhubung ke VC: ${channel.name} (${channel.guild.name})`);
 
-        voiceConnection.on(VoiceConnectionStatus.Disconnected, async () => {
-            try {
-                await Promise.race([
-                    entersState(voiceConnection, VoiceConnectionStatus.Signalling, 5000),
-                    entersState(voiceConnection, VoiceConnectionStatus.Connecting, 5000),
-                ]);
-            } catch (error) {
-                console.log("Bot terputus dari VC.");
-                try { voiceConnection.destroy(); } catch (e) {}
-                currentVoiceChannel = null;
-                voiceConnection = null;
-            }
-        });
+        let player = lavalink.getPlayer(channel.guild.id);
+        if (!player) {
+            player = await lavalink.createPlayer({
+                guildId: channel.guild.id,
+                voiceChannelId: channel.id,
+                textChannelId: channel.id,
+                selfDeaf: false,
+                selfMute: false
+            });
+        }
 
+        await player.connect();
+        console.log(`Lavalink terhubung ke VC: ${channel.name} (${channel.guild.name})`);
         return { success: true };
     } catch (err) {
         console.error('Gagal koneksi Voice:', err.message);
@@ -138,64 +80,20 @@ async function connectToChannel(channelId) {
     }
 }
 
-// Stream Audio Murni via play-dl
-async function playNext() {
-    if (queue.length === 0) {
-        isPlaying = false;
-        currentTrack = null;
-        return;
-    }
-
-    currentTrack = queue.shift();
-    isPlaying = true;
-
-    try {
-        console.log(`Memproses pemutaran: ${currentTrack.title} (${currentTrack.url})`);
-        
-        const stream = await play.stream(currentTrack.url, {
-            discordPlayerCompatibility: true,
-            quality: 2,
-            htmldata: false
-        });
-
-        const resource = createAudioResource(stream.stream, {
-            inputType: stream.type,
-            inlineVolume: false
-        });
-
-        audioPlayer.play(resource);
-        console.log(`Sedang memutar: ${currentTrack.title}`);
-    } catch (error) {
-        console.error('Gagal memutar lagu:', error.message);
-        isPlaying = false;
-        currentTrack = null;
-
-        if (queue.length > 0) {
-            setTimeout(playNext, 1000);
-        }
-    }
-}
-
-audioPlayer.on(AudioPlayerStatus.Idle, () => {
-    playNext();
-});
-
-audioPlayer.on('error', (err) => {
-    console.error('Audio Player Error Event:', err.message);
-    playNext();
-});
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 function renderDashboard() {
-    const queueList = queue.map((song, i) => `<li>${i + 1}. ${song.title}</li>`).join('');
+    let player = currentVoiceChannel ? lavalink.getPlayer(currentVoiceChannel.guild.id) : null;
+    let currentTrack = player && player.queue.current ? player.queue.current.info.title : 'Tidak ada';
+    let queueList = player ? player.queue.tracks.map((song, i) => `<li>${i + 1}. ${song.info.title}</li>`).join('') : '';
+
     return `
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Voicecord Controller</title>
+            <title>Voicecord Controller (Lavalink Engine)</title>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
                 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f1015; color: #e1e1e6; padding: 20px; max-width: 480px; margin: auto; }
@@ -224,15 +122,14 @@ function renderDashboard() {
             </div>
 
             <div class="card">
-                <h3>Music Player</h3>
+                <h3>Music Player (Lavalink Engine)</h3>
                 <p style="font-size: 13px; margin-bottom: 12px;">
                     <strong>Sedang Diputar:</strong><br>
-                    <span style="color: #5865F2; font-weight: bold;">${currentTrack ? currentTrack.title : 'Tidak ada'}</span><br>
-                    <small style="color:#a0a0b0;">Status: ${audioPlayer.state.status}</small>
+                    <span style="color: #5865F2; font-weight: bold;">${currentTrack}</span>
                 </p>
 
                 <form action="/api/play" method="POST">
-                    <input type="text" name="query" placeholder="Judul Lagu / Link Spotify / Link YouTube" required />
+                    <input type="text" name="query" placeholder="Judul Lagu / Link YouTube / Spotify / SoundCloud" required />
                     <button type="submit">Play / Add Queue</button>
                 </form>
 
@@ -273,84 +170,49 @@ app.post('/api/play', async (req, res) => {
     }
 
     try {
-        let searchQuery = query.trim();
-        let songInfo = {};
-
-        // 1. CEK LINK SPOTIFY
-        if (searchQuery.includes('spotify.com/track/')) {
-            try {
-                if (play.is_expired()) {
-                    await play.refreshToken();
-                }
-                const spotifyData = await play.spotify(searchQuery);
-                searchQuery = `${spotifyData.name} ${spotifyData.artists.map(a => a.name).join(' ')}`;
-                console.log(`Link Spotify terdeteksi! Mengubah query menjadi: "${searchQuery}"`);
-            } catch (spErr) {
-                console.log('Gagal membaca metadata Spotify, memproses sebagai query biasa...');
-            }
+        let player = lavalink.getPlayer(currentVoiceChannel.guild.id);
+        if (!player) {
+            await connectToChannel(currentVoiceChannel.id);
+            player = lavalink.getPlayer(currentVoiceChannel.guild.id);
         }
 
-        // 2. CEK LINK YOUTUBE LANGSUNG
-        if (searchQuery.startsWith('http://') || searchQuery.startsWith('https://')) {
-            const info = await play.video_info(searchQuery);
-            songInfo = { title: info.video_details.title, url: info.video_details.url };
+        // Search lagu via Lavalink Engine
+        const resSearch = await player.search({ query: query.trim() }, client.user);
+        if (resSearch && resSearch.tracks.length > 0) {
+            player.queue.add(resSearch.tracks[0]);
+            if (!player.playing && !player.paused) {
+                await player.play();
+            }
+            console.log(`Lavalink menambahkan lagu: ${resSearch.tracks[0].info.title}`);
         } else {
-            // 3. PENCARIAN JUDUL TEKS VIA YOUTUBE
-            const ytResults = await play.search(searchQuery, { limit: 1, source: { youtube: 'video' } });
-            if (ytResults && ytResults.length > 0) {
-                const video = ytResults[0];
-                songInfo = { 
-                    title: video.title, 
-                    url: video.url 
-                };
-            }
-        }
-
-        if (songInfo.url) {
-            console.log(`Lagu berhasil ditambahkan: ${songInfo.title} (${songInfo.url})`);
-            queue.push(songInfo);
-            if (!isPlaying && audioPlayer.state.status !== AudioPlayerStatus.Paused) {
-                playNext();
-            }
-        } else {
-            console.log('Lagu tidak ditemukan.');
+            console.log('Lagu tidak ditemukan via Lavalink.');
         }
     } catch (e) {
-        console.error('Error saat mencari/menambah lagu:', e.message);
+        console.error('Error Lavalink Play:', e.message);
     }
     res.redirect('/');
 });
 
-app.post('/api/pause', (req, res) => {
-    try {
-        if (audioPlayer.state.status === AudioPlayerStatus.Playing) {
-            audioPlayer.pause(true);
-        }
-    } catch (e) {
-        console.error('Error Pause:', e.message);
+app.post('/api/pause', async (req, res) => {
+    if (currentVoiceChannel) {
+        const player = lavalink.getPlayer(currentVoiceChannel.guild.id);
+        if (player) await player.pause();
     }
     res.redirect('/');
 });
 
-app.post('/api/resume', (req, res) => {
-    try {
-        if (
-            audioPlayer.state.status === AudioPlayerStatus.Paused || 
-            audioPlayer.state.status === AudioPlayerStatus.AutoPaused
-        ) {
-            audioPlayer.unpause();
-        }
-    } catch (e) {
-        console.error('Error Resume:', e.message);
+app.post('/api/resume', async (req, res) => {
+    if (currentVoiceChannel) {
+        const player = lavalink.getPlayer(currentVoiceChannel.guild.id);
+        if (player) await player.resume();
     }
     res.redirect('/');
 });
 
-app.post('/api/skip', (req, res) => {
-    try {
-        audioPlayer.stop();
-    } catch (e) {
-        console.error('Error Skip:', e.message);
+app.post('/api/skip', async (req, res) => {
+    if (currentVoiceChannel) {
+        const player = lavalink.getPlayer(currentVoiceChannel.guild.id);
+        if (player) await player.skip();
     }
     res.redirect('/');
 });
@@ -359,16 +221,10 @@ app.get('*', (req, res) => {
     res.send(renderDashboard());
 });
 
-client.on('ready', () => {
+client.on('ready', async () => {
     console.log(`Logged in as ${client.user.tag}`);
-});
-
-process.on('unhandledRejection', (error) => {
-    console.error('Unhandled Rejection Ignored:', error.message || error);
-});
-
-process.on('uncaughtException', (error) => {
-    console.error('Uncaught Exception Ignored:', error.message || error);
+    lavalink.options.client.id = client.user.id;
+    await lavalink.init(client.user);
 });
 
 app.listen(PORT, '0.0.0.0', () => {
