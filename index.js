@@ -52,17 +52,25 @@ const lavalink = new LavalinkManager({
     autoSkip: true
 });
 
-lavalink.nodeManager.on('error', (node, error) =>
-    console.warn(`[Lavalink Error] Node ${node.id || node.options.host}:`, error.message || error)
-);
+lavalink.nodeManager.on('error', (node, error) => {
+    console.warn(
+        `[Lavalink Error] Node ${node.id || node.options.host}:`,
+        error.message || error
+    );
+});
 
-lavalink.nodeManager.on('connect', node =>
-    console.log(`[Lavalink] Connected: ${node.id || node.options.host}`)
-);
+lavalink.nodeManager.on('connect', node => {
+    console.log(
+        `[Lavalink] Connected: ${node.id || node.options.host}`
+    );
+});
 
-lavalink.nodeManager.on('disconnect', (node, reason) =>
-    console.warn(`[Lavalink] Disconnected: ${node.id || node.options.host}`, reason)
-);
+lavalink.nodeManager.on('disconnect', (node, reason) => {
+    console.warn(
+        `[Lavalink] Disconnected: ${node.id || node.options.host}`,
+        reason
+    );
+});
 
 // State
 let currentVoiceChannel = null;
