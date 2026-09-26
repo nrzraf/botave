@@ -23,14 +23,35 @@ if (!TOKEN) {
     process.exit(1);
 }
 
-// Inisialisasi Lavalink Manager menggunakan Node Publik Gratis & Stabil
+// Inisialisasi Lavalink Manager dengan Multiple Public Node Fallback
 const lavalink = new LavalinkManager({
     nodes: [
         {
-            authorization: 'youshallnotpass',
-            host: 'lava-v4.ajieyp.com', // Public Lavalink Node v4
+            id: 'node-1',
+            host: 'lava-v4.ajieyp.com',
             port: 443,
-            secure: true
+            authorization: 'youshallnotpass',
+            secure: true,
+            retryAmount: 5,
+            retryDelay: 3000
+        },
+        {
+            id: 'node-2',
+            host: 'lavalink.serene.pw',
+            port: 443,
+            authorization: 'youshallnotpass',
+            secure: true,
+            retryAmount: 5,
+            retryDelay: 3000
+        },
+        {
+            id: 'node-3',
+            host: 'lavalink.v4.lavalink.is-a.dev',
+            port: 443,
+            authorization: 'youshallnotpass',
+            secure: true,
+            retryAmount: 5,
+            retryDelay: 3000
         }
     ],
     sendToShard: (guildId, payload) => {
@@ -40,6 +61,19 @@ const lavalink = new LavalinkManager({
     client: {
         id: '100000000000000000'
     }
+});
+
+// IMPORTANT: Tangkap event error pada NodeManager agar aplikasi TIDAK CRASH
+lavalink.nodeManager.on('error', (node, error) => {
+    console.warn(`[Lavalink Node Error] Node ${node.id || node.options.host} mengalami masalah:`, error.message || error);
+});
+
+lavalink.nodeManager.on('connect', (node) => {
+    console.log(`[Lavalink Connected] Terhubung ke Lavalink Node: ${node.id || node.options.host}`);
+});
+
+lavalink.nodeManager.on('disconnect', (node, reason) => {
+    console.warn(`[Lavalink Disconnected] Terputus dari Node ${node.id || node.options.host}. Alasan:`, reason);
 });
 
 let savedVoiceChannelId = "";
@@ -176,9 +210,8 @@ app.post('/api/play', async (req, res) => {
             player = lavalink.getPlayer(currentVoiceChannel.guild.id);
         }
 
-        // Search lagu via Lavalink Engine
         const resSearch = await player.search({ query: query.trim() }, client.user);
-        if (resSearch && resSearch.tracks.length > 0) {
+        if (resSearch && resSearch.tracks && resSearch.tracks.length > 0) {
             player.queue.add(resSearch.tracks[0]);
             if (!player.playing && !player.paused) {
                 await player.play();
@@ -225,6 +258,14 @@ client.on('ready', async () => {
     console.log(`Logged in as ${client.user.tag}`);
     lavalink.options.client.id = client.user.id;
     await lavalink.init(client.user);
+});
+
+// Anti-crash global
+process.on('unhandledRejection', (reason) => {
+    console.warn('Unhandled Rejection Caught:', reason);
+});
+process.on('uncaughtException', (err) => {
+    console.warn('Uncaught Exception Caught:', err.message || err);
 });
 
 app.listen(PORT, '0.0.0.0', () => {
