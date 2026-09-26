@@ -1,33 +1,17 @@
-server:
-  port: 2333
-  address: 0.0.0.0
-
-lavalink:
-  server:
-    password: "${LAVALINK_SERVER_PASSWORD}"
-    sources:
-      youtube: false
-      bandcamp: true
-      soundcloud: true
-      twitch: true
-      vimeo: true
-      nico: true
-      http: true
-      local: false
-
-  plugins:
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.1"
-
-plugins:
-  youtube:
-    enabled: true
-    allowSearch: true
-    allowDirectVideoIds: true
-    allowDirectPlaylistIds: true
-    clients:
-      - ANDROID_VR
-      - ANDROID_MUSIC
-      - MWEB
-      - WEB
-      - WEBEMBEDDED
-      - MUSIC
+{
+  "name": "ave-music-web",
+  "version": "1.0.0",
+  "description": "Discord Selfbot Voicecord Web Controller via Lavalink",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "discord.js-selfbot-v13": "^2.11.0",
+    "lavalink-client": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20.x"
+  }
+}
