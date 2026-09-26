@@ -36,8 +36,8 @@ const lavalink = new LavalinkManager({
             retryDelay: 5000
         },
         {
-            id: 'node-yoko',
-            host: 'lava-v4.yoko.so',
+            id: 'node-freelavalink',
+            host: 'lavalink.v4.lavalink.is-a.dev',
             port: 443,
             authorization: 'youshallnotpass',
             secure: true,
@@ -54,7 +54,6 @@ const lavalink = new LavalinkManager({
     }
 });
 
-// Listener penanganan error agar aplikasi TIDAK CRASH
 lavalink.nodeManager.on('error', (node, error) => {
     console.warn(`[Lavalink Error] Node ${node.id || node.options.host}:`, error.message || error);
 });
@@ -70,38 +69,64 @@ lavalink.nodeManager.on('disconnect', (node, reason) => {
 let savedVoiceChannelId = "";
 let currentVoiceChannel = null;
 
-// Forward event voice state Discord ke Lavalink
 client.on('raw', (d) => {
     lavalink.sendRawData(d);
 });
 
+// Fungsi Menghubungkan & Berpindah Voice Channel secara Bersih
 async function connectToChannel(channelId) {
     try {
         const channel = await client.channels.fetch(channelId);
         if (!channel || !channel.isVoice()) {
-            return { success: false, message: 'Channel tidak ditemukan!' };
+            return { success: false, message: 'Channel tidak ditemukan atau bukan Voice Channel!' };
         }
 
-        currentVoiceChannel = channel;
-        savedVoiceChannelId = channel.id;
-
+        // Jika sudah ada player di server ini, putuskan dan hapus player lama
         let player = lavalink.getPlayer(channel.guild.id);
-        if (!player) {
-            player = await lavalink.createPlayer({
-                guildId: channel.guild.id,
-                voiceChannelId: channel.id,
-                textChannelId: channel.id,
-                selfDeaf: false,
-                selfMute: false
-            });
+        if (player) {
+            try {
+                await player.disconnect();
+                await player.destroy();
+            } catch (e) {
+                console.log('Error membersihkan player lama:', e.message);
+            }
         }
+
+        // Buat player baru untuk channel tujuan
+        player = await lavalink.createPlayer({
+            guildId: channel.guild.id,
+            voiceChannelId: channel.id,
+            textChannelId: channel.id,
+            selfDeaf: false,
+            selfMute: false
+        });
 
         await player.connect();
-        console.log(`Lavalink terhubung ke VC: ${channel.name} (${channel.guild.name})`);
+        currentVoiceChannel = channel;
+        savedVoiceChannelId = channel.id;
+        console.log(`Lavalink berpindah & terhubung ke VC: ${channel.name} (${channel.guild.name})`);
         return { success: true };
     } catch (err) {
         console.error('Gagal koneksi Voice:', err.message);
         return { success: false, message: err.message };
+    }
+}
+
+// Fungsi Leave Voice Channel
+async function leaveChannel() {
+    if (!currentVoiceChannel) return;
+    try {
+        let player = lavalink.getPlayer(currentVoiceChannel.guild.id);
+        if (player) {
+            await player.disconnect();
+            await player.destroy();
+        }
+        console.log(`Bot keluar dari Voice Channel: ${currentVoiceChannel.name}`);
+    } catch (err) {
+        console.error('Gagal keluar dari Voice Channel:', err.message);
+    } finally {
+        currentVoiceChannel = null;
+        savedVoiceChannelId = "";
     }
 }
 
@@ -130,6 +155,7 @@ function renderDashboard() {
                 button { background: #5865F2; color: #fff; font-weight: bold; cursor: pointer; transition: 0.2s; }
                 button:hover { opacity: 0.9; }
                 button.alt { background: #2b2d3c; }
+                button.danger { background: #ed4245; }
             </style>
         </head>
         <body>
@@ -144,6 +170,11 @@ function renderDashboard() {
                     <input type="text" name="channelId" placeholder="Masukkan Voice Channel ID" value="${savedVoiceChannelId}" required />
                     <button type="submit" class="alt">Set / Pindah Voice Channel</button>
                 </form>
+                ${currentVoiceChannel ? `
+                <form action="/api/leave" method="POST" style="margin-top: 4px;">
+                    <button type="submit" class="danger">Leave Voice Channel</button>
+                </form>
+                ` : ''}
             </div>
 
             <div class="card">
@@ -183,6 +214,11 @@ app.post('/api/connect', async (req, res) => {
     if (channelId) {
         await connectToChannel(channelId.trim());
     }
+    res.redirect('/');
+});
+
+app.post('/api/leave', async (req, res) => {
+    await leaveChannel();
     res.redirect('/');
 });
 
