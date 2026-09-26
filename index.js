@@ -43,8 +43,24 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 3000;
 
 if (!TOKEN) {
-    console.error("ERROR: DISCORD_TOKEN tidak ditemukan!");
+    console.error("ERROR: DISCORD_TOKEN tidak ditemukan di Environment Variables!");
     process.exit(1);
+}
+
+// Inisialisasi Cookie YouTube dari Variable Railway untuk Menembus Bot Detection
+if (process.env.YT_COOKIE) {
+    try {
+        play.setToken({
+            youtube: {
+                cookie: process.env.YT_COOKIE
+            }
+        });
+        console.log("YouTube Cookie berhasil dimuat ke play-dl.");
+    } catch (err) {
+        console.error("Gagal memasang YouTube Cookie:", err.message);
+    }
+} else {
+    console.warn("PERINGATAN: YT_COOKIE belum dipasang di Railway Variables! YouTube mungkin memblokir pemutaran.");
 }
 
 // Inisialisasi Audio Player
@@ -107,7 +123,7 @@ async function connectToChannel(channelId) {
     }
 }
 
-// Stream Audio dengan handling fallback
+// Stream Audio dengan play-dl & Cookie Authentication
 async function playNext() {
     if (queue.length === 0) {
         isPlaying = false;
@@ -124,7 +140,8 @@ async function playNext() {
         let stream;
         try {
             stream = await play.stream(currentTrack.url, {
-                discordPlayerCompatibility: true
+                discordPlayerCompatibility: true,
+                quality: 2
             });
         } catch (playErr) {
             console.log('play-dl stream gagal, mencoba fallback ytdl-core...', playErr.message);
@@ -254,7 +271,7 @@ app.post('/api/play', async (req, res) => {
         let searchQuery = query.trim();
         let songInfo = {};
 
-        // 1. CEK LINK SPOTIFY (Ambil Metadata Spotify -> Cari Stream YouTube)
+        // 1. CEK LINK SPOTIFY
         if (searchQuery.includes('spotify.com/track/')) {
             try {
                 if (play.is_expired()) {
