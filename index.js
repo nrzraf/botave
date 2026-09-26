@@ -1,12 +1,11 @@
 const express = require('express');
 const { Client } = require('discord.js-selfbot-v13');
 const { LavalinkManager } = require('lavalink-client');
+const Settings = require('discord.js-selfbot-v13/src/managers/ClientUserSettingManager');
 
-// Patch Friend Source Flags Null Error pada discord.js-selfbot-v13
-const ClientUserSettingManager = require('discord.js-selfbot-v13/src/managers/ClientUserSettingManager');
-const originalPatch = ClientUserSettingManager.prototype._patch;
-ClientUserSettingManager.prototype._patch = function (data) {
-    if (data && data.friend_source_flags === null) {
+const originalPatch = Settings.prototype._patch;
+Settings.prototype._patch = function (data) {
+    if (data?.friend_source_flags === null) {
         data.friend_source_flags = { all: false, mutual_friends: false, mutual_guilds: false };
     }
     return originalPatch.call(this, data);
@@ -18,414 +17,683 @@ const client = new Client({ checkUpdate: false });
 const TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 3000;
 
+// Konfigurasi Menggunakan Server Lavalink Private milikmu di Railway
+const LAVALINK_HOST = process.env.LAVALINK_HOST;
+const LAVALINK_PORT = Number(process.env.LAVALINK_PORT || 2333);
+const LAVALINK_PASSWORD = process.env.LAVALINK_PASSWORD || 'youshallnotpass';
+const LAVALINK_SECURE = String(process.env.LAVALINK_SECURE ?? 'false').toLowerCase() === 'true';
+const LAVALINK_ID = process.env.LAVALINK_ID || 'main';
+
 if (!TOKEN) {
-    console.error("ERROR: DISCORD_TOKEN tidak ditemukan di Environment Variables!");
+    console.error('ERROR: DISCORD_TOKEN tidak ditemukan!');
     process.exit(1);
 }
 
-// Inisialisasi Lavalink Manager
+if (!LAVALINK_HOST) {
+    console.error('ERROR: LAVALINK_HOST tidak ditemukan di Environment Variables!');
+    process.exit(1);
+}
+
+console.log(`[Lavalink Config] Connecting to ${LAVALINK_HOST}:${LAVALINK_PORT} (Secure: ${LAVALINK_SECURE})`);
+
 const lavalink = new LavalinkManager({
-    nodes: [
-        {
-            id: 'node-jirayu',
-            host: 'lavalink.jirayu.net',
-            port: 443,
-            authorization: 'youshallnotpass',
-            secure: true,
-            retryAmount: 10,
-            retryDelay: 5000
-        },
-        {
-            id: 'node-freelavalink',
-            host: 'lavalink.v4.lavalink.is-a.dev',
-            port: 443,
-            authorization: 'youshallnotpass',
-            secure: true,
-            retryAmount: 10,
-            retryDelay: 5000
-        }
-    ],
+    nodes: [{
+        id: LAVALINK_ID,
+        host: LAVALINK_HOST,
+        port: LAVALINK_PORT,
+        authorization: LAVALINK_PASSWORD,
+        secure: LAVALINK_SECURE,
+        retryAmount: 15,
+        retryDelay: 3000
+    }],
     sendToShard: (guildId, payload) => {
         const guild = client.guilds.cache.get(guildId);
         if (guild) guild.shard.send(payload);
     },
-    client: {
-        id: '100000000000000000'
-    },
+    client: { id: '100000000000000000' },
     autoSkip: true
 });
 
 lavalink.nodeManager.on('error', (node, error) => {
-    console.warn(`[Lavalink Error] Node ${node.id || node.options.host}:`, error.message || error);
+    console.warn('[Lavalink Error] Node ' + (node?.id || node?.options?.host || 'unknown') + ':', error?.message || error);
 });
 
-lavalink.nodeManager.on('connect', (node) => {
-    console.log(`[Lavalink Connected] Berhasil terhubung ke Node: ${node.id || node.options.host}`);
+lavalink.nodeManager.on('connect', node => {
+    console.log('[Lavalink] Connected: ' + (node?.id || node?.options?.host || 'unknown'));
 });
 
 lavalink.nodeManager.on('disconnect', (node, reason) => {
-    console.warn(`[Lavalink Disconnected] Terputus dari Node ${node.id || node.options.host}. Alasan:`, reason);
+    console.warn('[Lavalink] Disconnected: ' + (node?.id || node?.options?.host || 'unknown'), reason || '');
 });
 
-let savedVoiceChannelId = "";
 let currentVoiceChannel = null;
+let savedVoiceChannelId = '';
+let voiceConnectPromise = null;
+let voiceConnectChannelId = '';
 let isAutoplayEnabled = false;
-
-// Mode Repeat State: 'off' | 'track' | 'queue'
 let repeatMode = 'off';
+let volume = 100;
+let autoplayActionInProgress = false;
+let manualSkipInProgress = false;
+let manualStopInProgress = false;
+const autoplayHistory = new Set();
+const MAX_HISTORY = 100;
 
-// Listener saat lagu selesai diputar
+function getCurrentPlayer() {
+    if (!currentVoiceChannel) return null;
+    return lavalink.getPlayer(currentVoiceChannel.guild.id);
+}
+
+function getPlayerVolume(player) {
+    if (!player) return volume;
+    const currentVolume = Number(player.volume);
+    if (Number.isFinite(currentVolume) && currentVolume >= 0) return Math.min(100, currentVolume);
+    return volume;
+}
+
+function getTrackTitle(track) {
+    return track?.info?.title || 'Tidak ada';
+}
+
+function getTrackId(track) {
+    return track?.info?.identifier || null;
+}
+
+function buildSearchQuery(query) {
+    const value = String(query || '').trim();
+    if (!value) return '';
+    if (/^(https?:\/\/|ytsearch:|ytmsearch:|scsearch:|spsearch:|dzsearch:|amsearch:)/i.test(value)) return value;
+    return 'ytsearch:' + value;
+}
+
+function escapeHtml(value) {
+    return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+}
+
+function rememberTrack(track) {
+    const id = getTrackId(track);
+    if (!id) return;
+    autoplayHistory.add(id);
+    if (autoplayHistory.size > MAX_HISTORY) {
+        const oldest = autoplayHistory.values().next().value;
+        if (oldest) autoplayHistory.delete(oldest);
+    }
+}
+
+function isVoiceChannelQuery(value) {
+    const query = String(value || '').trim();
+    if (!query) return false;
+    return query === savedVoiceChannelId || query === currentVoiceChannel?.id;
+}
+
+async function getAutoplayTrack(player, previousTrack) {
+    if (!player || !previousTrack || manualStopInProgress) return null;
+    const artist = previousTrack.info?.author?.trim();
+    const previousId = previousTrack.info?.identifier;
+    if (!artist) return null;
+
+    const queries = [
+        'ytsearch:' + artist + ' top tracks',
+        'ytsearch:' + artist + ' popular songs',
+        'ytsearch:' + artist + ' best songs',
+        'ytsearch:' + artist
+    ];
+
+    for (const query of queries) {
+        try {
+            console.log('[Autoplay] Search: ' + query);
+            const result = await player.search({ query }, client.user);
+            if (!result?.tracks?.length) continue;
+
+            let candidates = result.tracks.filter(track => {
+                const id = track?.info?.identifier;
+                return id && id !== previousId && !autoplayHistory.has(id);
+            });
+
+            if (!candidates.length) {
+                candidates = result.tracks.filter(track => {
+                    const id = track?.info?.identifier;
+                    return id && id !== previousId;
+                });
+            }
+
+            if (!candidates.length) continue;
+
+            const pool = candidates.slice(0, 5);
+            const selected = pool[Math.floor(Math.random() * pool.length)];
+            console.log('[Autoplay] Selected: ' + getTrackTitle(selected));
+            return selected;
+        } catch (err) {
+            console.warn('[Autoplay] Search failed:', err?.message || err);
+        }
+    }
+    return null;
+}
+
+async function playAutoplay(player, previousTrack) {
+    if (!isAutoplayEnabled || repeatMode !== 'off' || !player || autoplayActionInProgress || manualStopInProgress) return false;
+    autoplayActionInProgress = true;
+    try {
+        if (player.queue.tracks.length > 0 || manualStopInProgress) return false;
+        const next = await getAutoplayTrack(player, previousTrack);
+        if (!next || manualStopInProgress) {
+            console.log('[Autoplay] Tidak menemukan rekomendasi atau dihentikan.');
+            return false;
+        }
+        rememberTrack(next);
+        player.queue.add(next);
+        if (!manualStopInProgress) await player.play();
+        console.log('[Autoplay] Playing: ' + getTrackTitle(next));
+        return true;
+    } catch (err) {
+        console.error('[Autoplay Error]:', err?.message || err);
+        return false;
+    } finally {
+        autoplayActionInProgress = false;
+    }
+}
+
 lavalink.on('trackEnd', async (player, track) => {
-    // 1. Handling Mode Loop Track
-    if (repeatMode === 'track' && track) {
-        console.log(`[Loop Track] Memutar ulang lagu: ${track.info.title}`);
-        player.queue.add(track);
-        await player.play();
+    if (!track) return;
+    console.log('[Track End] ' + getTrackTitle(track));
+    if (manualStopInProgress) {
+        console.log('[Track End] Diabaikan karena manual Stop.');
         return;
     }
-
-    // 2. Handling Mode Loop Queue
-    if (repeatMode === 'queue' && track) {
-        console.log(`[Loop Queue] Menambahkan kembali lagu ke akhir antrean: ${track.info.title}`);
-        player.queue.add(track);
-    }
-
-    // 3. Handling Autoplay Berbasis Artis & Popularitas
-    if (isAutoplayEnabled && repeatMode === 'off' && player.queue.tracks.length === 0 && track) {
+    if (repeatMode === 'track') {
         try {
-            const artistName = track.info.author;
-            console.log(`[Autoplay] Antrean kosong. Mencari lagu populer lainnya dari artis: ${artistName}`);
-            
-            // Pencarian lagu terpopuler artis di YouTube/Lavalink
-            const searchQueries = [
-                `ytsearch:${artistName} top tracks`,
-                `ytsearch:${artistName} popular songs`,
-                `ytsearch:${artistName}`
-            ];
-
-            let recommendedTrack = null;
-
-            for (const q of searchQueries) {
-                const resSearch = await player.search({ query: q }, client.user);
-                if (resSearch && resSearch.tracks && resSearch.tracks.length > 0) {
-                    // Cari lagu yang tidak sama dengan lagu yang baru selesai
-                    const candidates = resSearch.tracks.filter(t => t.info.identifier !== track.info.identifier);
-                    if (candidates.length > 0) {
-                        // Pilih lagu acak dari 5 teratas untuk variasi
-                        const randomIndex = Math.floor(Math.random() * Math.min(candidates.length, 5));
-                        recommendedTrack = candidates[randomIndex];
-                        break;
-                    }
-                }
-            }
-
-            if (recommendedTrack) {
-                player.queue.add(recommendedTrack);
-                await player.play();
-                console.log(`[Autoplay] Memutar lagu populer artis (${artistName}): ${recommendedTrack.info.title}`);
-            }
+            await player.play({ track: track });
         } catch (err) {
-            console.error('[Autoplay Error]:', err.message);
+            console.error('[Repeat Track Error]:', err?.message || err);
         }
+        return;
     }
+    if (repeatMode === 'queue') {
+        try {
+            player.queue.add(track);
+            if (!player.playing && !player.paused) await player.play();
+        } catch (err) {
+            console.error('[Repeat Queue Error]:', err?.message || err);
+        }
+        return;
+    }
+    if (player.queue.tracks.length > 0) return;
+    if (isAutoplayEnabled) await playAutoplay(player, track);
+    else console.log('[Track End] Queue kosong, autoplay OFF.');
 });
 
-client.on('raw', (d) => {
-    lavalink.sendRawData(d);
-});
+client.on('raw', data => lavalink.sendRawData(data));
 
 async function connectToChannel(channelId) {
-    try {
-        const channel = await client.channels.fetch(channelId);
-        if (!channel || !channel.isVoice()) {
-            return { success: false, message: 'Channel tidak ditemukan atau bukan Voice Channel!' };
-        }
+    channelId = String(channelId || '').trim();
+    if (!channelId) return { success: false, message: 'Voice Channel ID kosong!' };
 
-        let player = lavalink.getPlayer(channel.guild.id);
-        if (player) {
-            try {
-                await player.disconnect();
-                await player.destroy();
-            } catch (e) {
-                console.log('Error membersihkan player lama:', e.message);
+    if (voiceConnectPromise) {
+        if (voiceConnectChannelId === channelId) return voiceConnectPromise;
+        try { await voiceConnectPromise; } catch (_) { }
+    }
+
+    voiceConnectChannelId = channelId;
+    voiceConnectPromise = (async () => {
+        try {
+            const channel = await client.channels.fetch(channelId);
+            if (!channel?.isVoice()) return { success: false, message: 'Bukan Voice Channel!' };
+            manualStopInProgress = false;
+
+            let player = lavalink.getPlayer(channel.guild.id);
+            if (player) {
+                try { await player.disconnect(); } catch (_) { }
+                try { await player.destroy(); } catch (_) { }
             }
+
+            player = await lavalink.createPlayer({
+                guildId: channel.guild.id,
+                voiceChannelId: channel.id,
+                textChannelId: channel.id,
+                selfDeaf: false,
+                selfMute: false,
+                volume: volume
+            });
+
+            await player.connect();
+            try {
+                await player.setVolume(volume);
+            } catch (err) {
+                console.warn('[Volume] Initial set failed:', err?.message || err);
+            }
+            currentVoiceChannel = channel;
+            savedVoiceChannelId = channel.id;
+            console.log('[Voice] Connected: ' + channel.name);
+            return { success: true };
+        } catch (err) {
+            console.error('[Voice] Connect error:', err?.message || err);
+            return { success: false, message: err?.message || 'Unknown error' };
         }
+    })();
 
-        player = await lavalink.createPlayer({
-            guildId: channel.guild.id,
-            voiceChannelId: channel.id,
-            textChannelId: channel.id,
-            selfDeaf: false,
-            selfMute: false
-        });
-
-        await player.connect();
-        currentVoiceChannel = channel;
-        savedVoiceChannelId = channel.id;
-        console.log(`Lavalink terhubung ke VC: ${channel.name} (${channel.guild.name})`);
-        return { success: true };
-    } catch (err) {
-        console.error('Gagal koneksi Voice:', err.message);
-        return { success: false, message: err.message };
+    try {
+        return await voiceConnectPromise;
+    } finally {
+        voiceConnectPromise = null;
+        voiceConnectChannelId = '';
     }
 }
 
 async function leaveChannel() {
     if (!currentVoiceChannel) return;
+    manualStopInProgress = true;
     try {
-        let player = lavalink.getPlayer(currentVoiceChannel.guild.id);
+        const player = lavalink.getPlayer(currentVoiceChannel.guild.id);
         if (player) {
-            await player.disconnect();
-            await player.destroy();
+            try { await player.stopPlaying(true, false); } catch (_) { }
+            try { await player.disconnect(); } catch (_) { }
+            try { await player.destroy(); } catch (_) { }
         }
-        console.log(`Bot keluar dari Voice Channel: ${currentVoiceChannel.name}`);
     } catch (err) {
-        console.error('Gagal keluar dari Voice Channel:', err.message);
-    } finally {
-        currentVoiceChannel = null;
-        savedVoiceChannelId = "";
+        console.error('[Voice] Leave error:', err?.message || err);
     }
+    currentVoiceChannel = null;
+    savedVoiceChannelId = '';
+    autoplayHistory.clear();
+    autoplayActionInProgress = false;
+    manualSkipInProgress = false;
+}
+
+async function stopPlayer(player) {
+    if (!player) return;
+    manualStopInProgress = true;
+    autoplayActionInProgress = false;
+    manualSkipInProgress = false;
+    try {
+        if (typeof player.stopPlaying === 'function') {
+            await player.stopPlaying(true, false);
+        } else {
+            if (player.queue?.tracks) player.queue.tracks.splice(0, player.queue.tracks.length);
+            console.warn('[Stop] stopPlaying() tidak tersedia.');
+        }
+    } catch (err) {
+        console.warn('[Stop] stopPlaying() failed:', err?.message || err);
+    }
+    try {
+        if (player.queue?.tracks) player.queue.tracks.splice(0, player.queue.tracks.length);
+    } catch (err) {
+        console.warn('[Stop] Queue cleanup failed:', err?.message || err);
+    }
+    console.log('[Stop] Playback stopped and queue cleared.');
+}
+
+async function setPlayerVolume(player, requestedVolume) {
+    if (!player) return false;
+    let newVolume = Number(requestedVolume);
+    if (!Number.isFinite(newVolume)) return false;
+    newVolume = Math.round(newVolume);
+    newVolume = Math.max(0, Math.min(100, newVolume));
+    try {
+        await player.setVolume(newVolume);
+        volume = newVolume;
+        return true;
+    } catch (err) {
+        console.error('[Volume Error]:', err?.message || err);
+        return false;
+    }
+}
+
+app.get('/api/state', (req, res) => {
+    try {
+        const player = getCurrentPlayer();
+        const current = player?.queue?.current || null;
+        const tracks = player?.queue?.tracks || [];
+        res.json({
+            connected: Boolean(currentVoiceChannel),
+            voiceChannel: currentVoiceChannel ? {
+                id: currentVoiceChannel.id,
+                name: currentVoiceChannel.name,
+                guildName: currentVoiceChannel.guild?.name || ''
+            } : null,
+            playing: Boolean(player?.playing),
+            paused: Boolean(player?.paused),
+            current: current ? {
+                title: getTrackTitle(current),
+                author: current.info?.author || '',
+                identifier: current.info?.identifier || ''
+            } : null,
+            queue: tracks.map((track, index) => ({
+                index,
+                title: getTrackTitle(track),
+                author: track.info?.author || ''
+            })),
+            queueLength: tracks.length,
+            volume: getPlayerVolume(player),
+            autoplay: isAutoplayEnabled,
+            repeat: repeatMode
+        });
+    } catch (err) {
+        console.error('[State Error]:', err?.message || err);
+        res.status(500).json({ error: true });
+    }
+});
+
+function renderDashboard() {
+    const player = getCurrentPlayer();
+    const current = player?.queue?.current?.info?.title || 'Tidak ada';
+    const currentVolume = getPlayerVolume(player);
+    let queue = '<li class="empty-queue">Antrean kosong</li>';
+    if (player?.queue?.tracks?.length) {
+        queue = player.queue.tracks.map((song, i) => {
+            return '<li class="queue-item">' +
+                '<div class="queue-title">' +
+                '<span class="queue-number">' + (i + 1) + '.</span>' +
+                '<span class="queue-song">' + escapeHtml(getTrackTitle(song)) + '</span>' +
+                '</div>' +
+                '<form action="/api/delete-queue-item" method="POST">' +
+                '<input type="hidden" name="index" value="' + i + '">' +
+                '<button class="danger small" type="submit">X</button>' +
+                '</form>' +
+                '</li>';
+        }).join('');
+    }
+    const voiceStatus = currentVoiceChannel ?
+        '<span style="color:#57f287">' + escapeHtml(currentVoiceChannel.name) + ' (' + escapeHtml(currentVoiceChannel.guild.name) + ')</span>' :
+        '<span style="color:#ed4245">Belum Terhubung</span>';
+    const leaveButton = currentVoiceChannel ?
+        '<form action="/api/leave" method="POST"><button class="danger">Leave Voice Channel</button></form>' : '';
+    const loopTrackClass = repeatMode === 'track' ? 'active' : 'alt';
+    const loopQueueClass = repeatMode === 'queue' ? 'active' : 'alt';
+    const autoplayClass = isAutoplayEnabled ? 'active' : 'alt';
+    const loopTrackText = repeatMode === 'track' ? 'ON' : 'OFF';
+    const loopQueueText = repeatMode === 'queue' ? 'ON' : 'OFF';
+    const autoplayText = isAutoplayEnabled ? 'ON' : 'OFF';
+
+    return '<!DOCTYPE html>' +
+        '<html lang="id">' +
+        '<head>' +
+        '<meta charset="UTF-8">' +
+        '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+        '<title>Voicecord Controller</title>' +
+        '<style>' +
+        '*{box-sizing:border-box}' +
+        'body{font-family:Arial,sans-serif;background:#0f1015;color:#e1e1e6;padding:20px;max-width:520px;margin:auto}' +
+        '.card{background:#181920;padding:18px;border-radius:12px;margin-bottom:16px;border:1px solid #282a36}' +
+        'h2,h3{margin-top:0;color:#fff}' +
+        'input,button{padding:11px;margin:5px 0;width:100%;border:0;border-radius:8px;font-size:14px}' +
+        'input{background:#222431;color:#fff;border:1px solid #323546}' +
+        'button{background:#5865f2;color:#fff;font-weight:bold;cursor:pointer;transition:opacity .15s,transform .05s}' +
+        'button:hover{opacity:.9}' +
+        'button:active{transform:scale(.98)}' +
+        'button.alt{background:#2b2d3c}' +
+        'button.danger{background:#ed4245}' +
+        'button.active{background:#57f287;color:#000}' +
+        'button.small{width:auto;padding:5px 9px;margin:0}' +
+        '.controls{display:flex;gap:8px;margin-top:6px}' +
+        '.controls form{flex:1;min-width:0}' +
+        '.status{font-size:13px;color:#aaa}' +
+        '.current{color:#5865f2;font-weight:bold;font-size:16px;word-break:break-word}' +
+        '.play-search{margin-bottom:6px}' +
+        '.play-buttons{display:flex;gap:8px}' +
+        '.play-buttons form{margin:0}' +
+        '.play-buttons .play-submit{flex:1}' +
+        '.play-buttons .stop-submit{flex:0 0 85px}' +
+        '.play-buttons button{height:100%}' +
+        '.volume-box{margin-top:14px;background:#222431;padding:12px;border-radius:10px}' +
+        '.volume-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}' +
+        '.volume-value{color:#57f287;font-weight:bold}' +
+        'input[type="range"]{width:100%;margin:0;padding:0;accent-color:#5865f2;cursor:pointer}' +
+        '.queue{padding:0;list-style:none;margin:0}' +
+        '.queue-item{display:flex;justify-content:space-between;align-items:center;margin:7px 0;gap:8px;background:#222431;padding:8px;border-radius:7px}' +
+        '.queue-title{display:flex;gap:6px;min-width:0;flex:1}' +
+        '.queue-number{color:#888;flex-shrink:0}' +
+        '.queue-song{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+        '.empty-queue{color:#777;padding:8px 0}' +
+        '@media(max-width:400px){body{padding:12px}.play-buttons .stop-submit{flex:0 0 72px}}' +
+        '</style>' +
+        '</head>' +
+        '<body>' +
+        '<h2>Voicecord Controller</h2>' +
+        '<div class="card">' +
+        '<h3>Voice Channel</h3>' +
+        '<p class="status">Status: <strong id="voice-status">' + voiceStatus + '</strong></p>' +
+        '<form action="/api/connect" method="POST">' +
+        '<input name="channelId" placeholder="Voice Channel ID" value="' + escapeHtml(savedVoiceChannelId) + '" required>' +
+        '<button class="alt">Set / Pindah Voice Channel</button>' +
+        '</form>' +
+        leaveButton +
+        '</div>' +
+        '<div class="card">' +
+        '<h3>Music Player</h3>' +
+        '<p class="status">Sedang Diputar:</p>' +
+        '<p class="current" id="current-track">' + escapeHtml(current) + '</p>' +
+        '<div class="volume-box">' +
+        '<div class="volume-header"><span>🔊 Volume</span><span class="volume-value" id="volume-value">' + currentVolume + '%</span></div>' +
+        '<input id="volume-slider" type="range" min="0" max="100" value="' + currentVolume + '" step="1">' +
+        '</div>' +
+        '<form action="/api/play" method="POST" class="play-search">' +
+        '<input name="query" placeholder="Judul / YouTube / Spotify / SoundCloud" required>' +
+        '</form>' +
+        '<div class="play-buttons">' +
+        '<form action="/api/play" method="POST" class="play-submit">' +
+        '<input type="hidden" id="play-query" name="query" value="">' +
+        '<button>▶ Play / Add Queue</button>' +
+        '</form>' +
+        '<form action="/api/stop" method="POST" class="stop-submit">' +
+        '<button class="danger">⏹ Stop</button>' +
+        '</form>' +
+        '</div>' +
+        '<div class="controls">' +
+        '<form action="/api/pause" method="POST"><button class="alt">⏸ Pause</button></form>' +
+        '<form action="/api/resume" method="POST"><button class="alt">▶ Resume</button></form>' +
+        '<form action="/api/skip" method="POST"><button class="alt">⏭ Skip</button></form>' +
+        '</div>' +
+        '<div class="controls">' +
+        '<form action="/api/loop-track" method="POST"><button id="loop-track-button" class="' + loopTrackClass + '">Loop Track: ' + loopTrackText + '</button></form>' +
+        '<form action="/api/loop-queue" method="POST"><button id="loop-queue-button" class="' + loopQueueClass + '">Loop Queue: ' + loopQueueText + '</button></form>' +
+        '</div>' +
+        '<form action="/api/toggle-autoplay" method="POST"><button id="autoplay-button" class="' + autoplayClass + '">Autoplay: ' + autoplayText + '</button></form>' +
+        '</div>' +
+        '<div class="card">' +
+        '<h3>Antrean Lagu</h3>' +
+        '<ol class="queue" id="queue-list">' + queue + '</ol>' +
+        '</div>' +
+        '<script>' +
+        'const searchForm=document.querySelector(".play-search");' +
+        'const playForm=document.querySelector(".play-submit");' +
+        'const searchInput=searchForm?.querySelector("input[name=query]");' +
+        'const playQuery=document.getElementById("play-query");' +
+        'if(searchInput&&playQuery)searchInput.addEventListener("input",()=>playQuery.value=searchInput.value);' +
+        'if(searchForm)searchForm.addEventListener("submit",event=>{event.preventDefault();if(searchInput?.value?.trim()){playQuery.value=searchInput.value.trim();playForm.submit()}});' +
+        'let volumeTimer=null;let volumeRequest=null;' +
+        'const volumeSlider=document.getElementById("volume-slider");' +
+        'const volumeValue=document.getElementById("volume-value");' +
+        'if(volumeSlider)volumeSlider.addEventListener("input",()=>{const value=Number(volumeSlider.value);if(volumeValue)volumeValue.textContent=value+"%";clearTimeout(volumeTimer);volumeTimer=setTimeout(async()=>{try{if(volumeRequest)volumeRequest.abort();volumeRequest=new AbortController();await fetch("/api/volume",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({volume:value}),signal:volumeRequest.signal})}catch(err){if(err.name!=="AbortError")console.warn("Volume update failed:",err)}},80)});' +
+        'function escapeHtml(value){const div=document.createElement("div");div.textContent=value??"";return div.innerHTML}' +
+        'function renderQueue(queue){const list=document.getElementById("queue-list");if(!list)return;if(!queue||queue.length===0){list.innerHTML="<li class=\\"empty-queue\\">Antrean kosong</li>";return}list.innerHTML=queue.map(song=>"<li class=\\"queue-item\\"><div class=\\"queue-title\\"><span class=\\"queue-number\\">"+(song.index+1)+".</span><span class=\\"queue-song\\">"+escapeHtml(song.title)+"</span></div><form action=\\"/api/delete-queue-item\\" method=\\"POST\\"><input type=\\"hidden\\" name=\\"index\\" value=\\""+song.index+"\\"><button class=\\"danger small\\" type=\\"submit\\">X</button></form></li>").join("")}' +
+        'function updateButton(id,label,active){const button=document.getElementById(id);if(!button)return;button.textContent=label+": "+(active?"ON":"OFF");button.className=active?"active":"alt"}' +
+        'async function updateState(){try{const response=await fetch("/api/state",{cache:"no-store"});if(!response.ok)return;const state=await response.json();const current=document.getElementById("current-track");if(current)current.textContent=state.current?.title||"Tidak ada";const slider=document.getElementById("volume-slider");const volumeLabel=document.getElementById("volume-value");if(slider&&document.activeElement!==slider)slider.value=state.volume;if(volumeLabel)volumeLabel.textContent=state.volume+"%";renderQueue(state.queue);updateButton("loop-track-button","Loop Track",state.repeat==="track");updateButton("loop-queue-button","Loop Queue",state.repeat==="queue");updateButton("autoplay-button","Autoplay",state.autoplay);const voiceStatus=document.getElementById("voice-status");if(voiceStatus){if(state.connected)voiceStatus.innerHTML="<span style=\\"color:#57f287\\">"+escapeHtml(state.voiceChannel?.name||"")+" ("+escapeHtml(state.voiceChannel?.guildName||"")+")</span>";else voiceStatus.innerHTML="<span style=\\"color:#ed4245\\">Belum Terhubung</span>"}}catch(err){console.warn("State update failed:",err)}}' +
+        'updateState();setInterval(updateState,1000);' +
+        '</script>' +
+        '</body>' +
+        '</html>';
 }
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.get('/favicon.ico', (req, res) => res.status(204).end());
-
-function renderDashboard() {
-    let player = currentVoiceChannel ? lavalink.getPlayer(currentVoiceChannel.guild.id) : null;
-    let currentTrack = player && player.queue.current ? player.queue.current.info.title : 'Tidak ada';
-    
-    // Render item antrean lagu dengan tombol Hapus (X) di bagian kanan
-    let queueList = '';
-    if (player && player.queue.tracks.length > 0) {
-        queueList = player.queue.tracks.map((song, i) => `
-            <li style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px;">
-                    ${i + 1}. ${song.info.title}
-                </span>
-                <form action="/api/delete-queue-item" method="POST" style="margin:0;">
-                    <input type="hidden" name="index" value="${i}" />
-                    <button type="submit" class="danger" style="padding: 4px 10px; margin: 0; font-size: 12px; width: auto;">X</button>
-                </form>
-            </li>
-        `).join('');
-    }
-
-    return `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Voicecord Controller (Lavalink Engine)</title>
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <style>
-                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f1015; color: #e1e1e6; padding: 20px; max-width: 480px; margin: auto; }
-                .card { background: #181920; padding: 18px; border-radius: 12px; margin-bottom: 16px; border: 1px solid #282a36; }
-                h2, h3 { margin-top: 0; color: #fff; }
-                input, button { padding: 12px; margin: 6px 0; width: 100%; box-sizing: border-box; border-radius: 8px; border: none; font-size: 14px; }
-                input { background: #222431; color: #fff; border: 1px solid #323546; }
-                input:focus { border-color: #5865F2; outline: none; }
-                button { background: #5865F2; color: #fff; font-weight: bold; cursor: pointer; transition: 0.2s; }
-                button:hover { opacity: 0.9; }
-                button.alt { background: #2b2d3c; }
-                button.danger { background: #ed4245; }
-                button.active { background: #57F287; color: #000; }
-                ol { padding-left: 0; list-style: none; margin: 0; }
-            </style>
-        </head>
-        <body>
-            <h2>Voicecord Controller</h2>
-
-            <div class="card">
-                <h3>Voice Channel Target</h3>
-                <p style="font-size: 13px; margin: 4px 0 12px 0; color: #a0a0b0;">
-                    Status VC: <strong>${currentVoiceChannel ? `${currentVoiceChannel.name} (${currentVoiceChannel.guild.name})` : '<span style="color:#ed4245;">Belum Terhubung</span>'}</strong>
-                </p>
-                <form action="/api/connect" method="POST">
-                    <input type="text" name="channelId" placeholder="Masukkan Voice Channel ID" value="${savedVoiceChannelId}" required />
-                    <button type="submit" class="alt">Set / Pindah Voice Channel</button>
-                </form>
-                ${currentVoiceChannel ? `
-                <form action="/api/leave" method="POST" style="margin-top: 4px;">
-                    <button type="submit" class="danger">Leave Voice Channel</button>
-                </form>
-                ` : ''}
-            </div>
-
-            <div class="card">
-                <h3>Music Player (Lavalink Engine)</h3>
-                <p style="font-size: 13px; margin-bottom: 12px;">
-                    <strong>Sedang Diputar:</strong><br>
-                    <span style="color: #5865F2; font-weight: bold;">${currentTrack}</span>
-                </p>
-
-                <form action="/api/play" method="POST">
-                    <input type="text" name="query" placeholder="Judul Lagu / Link YouTube / Spotify / SoundCloud" required />
-                    <button type="submit">Play / Add Queue</button>
-                </form>
-
-                <div style="display: flex; gap: 8px; margin-top: 6px;">
-                    <form action="/api/pause" method="POST" style="flex:1;"><button type="submit" class="alt">Pause</button></form>
-                    <form action="/api/resume" method="POST" style="flex:1;"><button type="submit" class="alt">Resume</button></form>
-                    <form action="/api/skip" method="POST" style="flex:1;"><button type="submit" class="alt">Skip</button></form>
-                </div>
-
-                <div style="display: flex; gap: 8px; margin-top: 6px;">
-                    <!-- Tombol Loop Track -->
-                    <form action="/api/loop-track" method="POST" style="flex:1;">
-                        <button type="submit" class="${repeatMode === 'track' ? 'active' : 'alt'}">
-                            Loop Track: ${repeatMode === 'track' ? 'ON' : 'OFF'}
-                        </button>
-                    </form>
-                    
-                    <!-- Tombol Loop Queue -->
-                    <form action="/api/loop-queue" method="POST" style="flex:1;">
-                        <button type="submit" class="${repeatMode === 'queue' ? 'active' : 'alt'}">
-                            Loop Queue: ${repeatMode === 'queue' ? 'ON' : 'OFF'}
-                        </button>
-                    </form>
-                </div>
-
-                <!-- Tombol Autoplay -->
-                <form action="/api/toggle-autoplay" method="POST" style="margin-top: 6px;">
-                    <button type="submit" class="${isAutoplayEnabled ? 'active' : 'alt'}">
-                        Autoplay (Artist Popularity): ${isAutoplayEnabled ? 'ON' : 'OFF'}
-                    </button>
-                </form>
-            </div>
-
-            <div class="card">
-                <h3>Antrean Lagu</h3>
-                <ol>${queueList || '<li style="font-size:14px;">Antrean kosong</li>'}</ol>
-            </div>
-        </body>
-        </html>
-    `;
-}
-
-app.get('/', (req, res) => {
-    res.send(renderDashboard());
-});
+app.get('/favicon.ico', (_, res) => res.status(204).end());
+app.get('/', (_, res) => res.send(renderDashboard()));
 
 app.post('/api/connect', async (req, res) => {
-    const { channelId } = req.body;
-    if (channelId) {
-        await connectToChannel(channelId.trim());
-    }
+    const channelId = String(req.body.channelId || '').trim();
+    if (channelId) await connectToChannel(channelId);
     res.redirect('/');
 });
 
-app.post('/api/leave', async (req, res) => {
+app.post('/api/leave', async (_, res) => {
     await leaveChannel();
     res.redirect('/');
 });
 
 app.post('/api/play', async (req, res) => {
-    const { query } = req.body;
+    const query = String(req.body.query || '').trim();
     if (!query) return res.redirect('/');
-
-    if (!currentVoiceChannel) {
-        return res.send('<script>alert("Atur Voice Channel ID terlebih dahulu!"); window.location.href="/";</script>');
+    if (isVoiceChannelQuery(query)) {
+        console.warn('[Play] Voice Channel ID diterima sebagai query, diabaikan: ' + query);
+        return res.redirect('/');
     }
-
+    if (!currentVoiceChannel) {
+        if (savedVoiceChannelId) {
+            const connection = await connectToChannel(savedVoiceChannelId);
+            if (!connection.success) {
+                return res.send('<script>alert("Gagal terhubung ke Voice Channel!");location.href="/";</script>');
+            }
+        } else {
+            return res.send('<script>alert("Atur Voice Channel ID terlebih dahulu!");location.href="/";</script>');
+        }
+    }
+    manualStopInProgress = false;
     try {
         let player = lavalink.getPlayer(currentVoiceChannel.guild.id);
         if (!player) {
-            await connectToChannel(currentVoiceChannel.id);
+            const connection = await connectToChannel(currentVoiceChannel.id);
+            if (!connection.success) return res.redirect('/');
             player = lavalink.getPlayer(currentVoiceChannel.guild.id);
         }
+        if (!player) return res.redirect('/');
 
-        const resSearch = await player.search({ query: query.trim() }, client.user);
-        if (resSearch && resSearch.tracks && resSearch.tracks.length > 0) {
-            player.queue.add(resSearch.tracks[0]);
-            if (!player.playing && !player.paused) {
-                await player.play();
-            }
-            console.log(`Lavalink menambahkan lagu: ${resSearch.tracks[0].info.title}`);
-        } else {
-            console.log('Lagu tidak ditemukan via Lavalink.');
+        const searchQuery = buildSearchQuery(query);
+        console.log('[Search] ' + searchQuery);
+        const result = await player.search({ query: searchQuery }, client.user);
+        const track = result?.tracks?.[0];
+        console.log('[Search] Result: ' + (track ? getTrackTitle(track) : 'Tidak ada'));
+
+        if (!track) {
+            console.warn('[Search] Tidak ada hasil untuk: ' + query);
+            return res.redirect('/');
         }
-    } catch (e) {
-        console.error('Error Lavalink Play:', e.message);
+
+        player.queue.add(track);
+        console.log('[Play] ' + getTrackTitle(track));
+        if (!player.playing && !player.paused) await player.play();
+    } catch (err) {
+        console.error('[Play/Search Error]:', err?.stack || err?.message || err);
     }
     res.redirect('/');
 });
 
+app.post('/api/pause', async (_, res) => {
+    const player = getCurrentPlayer();
+    if (player) {
+        try { await player.pause(); } catch (err) { console.error('[Pause Error]:', err?.message || err); }
+    }
+    res.redirect('/');
+});
+
+app.post('/api/resume', async (_, res) => {
+    const player = getCurrentPlayer();
+    if (player) {
+        try { await player.resume(); } catch (err) { console.error('[Resume Error]:', err?.message || err); }
+    }
+    res.redirect('/');
+});
+
+app.post('/api/skip', async (_, res) => {
+    const player = getCurrentPlayer();
+    if (!player) return res.redirect('/');
+    if (manualSkipInProgress) return res.redirect('/');
+
+    manualSkipInProgress = true;
+    manualStopInProgress = false;
+    try {
+        const current = player.queue.current;
+        if (!current) return res.redirect('/');
+
+        if (player.queue.tracks.length > 0) {
+            console.log('[Skip] Next queue track.');
+            await player.skip();
+            return res.redirect('/');
+        }
+
+        if (!isAutoplayEnabled) {
+            console.log('[Skip] Queue kosong + autoplay OFF.');
+            await stopPlayer(player);
+            return res.redirect('/');
+        }
+
+        console.log('[Skip] Searching autoplay next after: ' + getTrackTitle(current));
+        const next = await getAutoplayTrack(player, current);
+        if (!next) {
+            console.log('[Skip] Recommendation tidak ditemukan.');
+            await stopPlayer(player);
+            return res.redirect('/');
+        }
+
+        rememberTrack(next);
+        player.queue.add(next);
+        console.log('[Skip] Autoplay Next: ' + getTrackTitle(next));
+        await player.skip();
+    } catch (err) {
+        console.error('[Skip Error]:', err?.message || err);
+    } finally {
+        setTimeout(() => { manualSkipInProgress = false; }, 300);
+    }
+    res.redirect('/');
+});
+
+app.post('/api/stop', async (_, res) => {
+    const player = getCurrentPlayer();
+    if (player) await stopPlayer(player);
+    res.redirect('/');
+});
+
+app.post('/api/volume', async (req, res) => {
+    const player = getCurrentPlayer();
+    if (!player) return res.status(400).json({ success: false, message: 'Player belum terhubung.' });
+    const requestedVolume = req.body?.volume;
+    const success = await setPlayerVolume(player, requestedVolume);
+    if (!success) return res.status(400).json({ success: false, volume: getPlayerVolume(player) });
+    return res.json({ success: true, volume: volume });
+});
+
 app.post('/api/loop-track', (req, res) => {
     repeatMode = repeatMode === 'track' ? 'off' : 'track';
-    console.log(`Mode Repeat diubah ke: ${repeatMode}`);
+    console.log('[Repeat] ' + repeatMode);
     res.redirect('/');
 });
 
 app.post('/api/loop-queue', (req, res) => {
     repeatMode = repeatMode === 'queue' ? 'off' : 'queue';
-    console.log(`Mode Repeat diubah ke: ${repeatMode}`);
+    console.log('[Repeat] ' + repeatMode);
     res.redirect('/');
 });
 
-app.post('/api/toggle-autoplay', (req, res) => {
+app.post('/api/toggle-autoplay', (_, res) => {
     isAutoplayEnabled = !isAutoplayEnabled;
-    console.log(`Autoplay status diubah menjadi: ${isAutoplayEnabled ? 'ON' : 'OFF'}`);
+    console.log('[Autoplay] ' + (isAutoplayEnabled ? 'ON' : 'OFF'));
     res.redirect('/');
 });
 
 app.post('/api/delete-queue-item', (req, res) => {
-    const { index } = req.body;
-    if (currentVoiceChannel && index !== undefined) {
-        const player = lavalink.getPlayer(currentVoiceChannel.guild.id);
-        if (player && player.queue.tracks.length > parseInt(index)) {
-            const removedTrack = player.queue.tracks.splice(parseInt(index), 1);
-            if (removedTrack.length > 0) {
-                console.log(`Menghapus dari antrean: ${removedTrack[0].info.title}`);
-            }
-        }
+    const player = getCurrentPlayer();
+    const index = Number.parseInt(req.body.index, 10);
+    if (player && Number.isInteger(index) && player.queue.tracks[index]) {
+        const removed = player.queue.tracks.splice(index, 1)[0];
+        console.log('[Queue] Removed: ' + getTrackTitle(removed));
     }
     res.redirect('/');
 });
 
-app.post('/api/pause', async (req, res) => {
-    if (currentVoiceChannel) {
-        const player = lavalink.getPlayer(currentVoiceChannel.guild.id);
-        if (player) await player.pause();
-    }
-    res.redirect('/');
-});
-
-app.post('/api/resume', async (req, res) => {
-    if (currentVoiceChannel) {
-        const player = lavalink.getPlayer(currentVoiceChannel.guild.id);
-        if (player) await player.resume();
-    }
-    res.redirect('/');
-});
-
-app.post('/api/skip', async (req, res) => {
-    if (currentVoiceChannel) {
-        const player = lavalink.getPlayer(currentVoiceChannel.guild.id);
-        if (player) await player.skip();
-    }
-    res.redirect('/');
-});
-
-app.get('*', (req, res) => {
-    res.send(renderDashboard());
-});
+app.get('*', (_, res) => res.send(renderDashboard()));
 
 client.on('ready', async () => {
-    console.log(`Logged in as ${client.user.tag}`);
+    console.log('Logged in as ' + client.user.tag);
     lavalink.options.client.id = client.user.id;
-    await lavalink.init(client.user);
+    try {
+        await lavalink.init(client.user);
+        console.log('[Lavalink] Manager initialized.');
+    } catch (err) {
+        console.error('[Lavalink] Init error:', err?.message || err);
+    }
 });
 
-// Guardrail Anti-crash global
-process.on('unhandledRejection', (reason) => {
-    console.warn('Unhandled Rejection Ignored:', reason);
-});
-process.on('uncaughtException', (err) => {
-    console.warn('Uncaught Exception Ignored:', err.message || err);
-});
+process.on('unhandledRejection', reason => console.warn('[Unhandled Rejection]', reason));
+process.on('uncaughtException', err => console.warn('[Uncaught Exception]', err?.message || err));
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Web Controller berjalan di port ${PORT}`);
-});
-
+app.listen(PORT, '0.0.0.0', () => console.log('Web Controller berjalan di port ' + PORT));
 client.login(TOKEN);
