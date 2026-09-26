@@ -16,35 +16,25 @@ const client = new Client({ checkUpdate: false });
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 3000;
-
-// Konfigurasi Menggunakan Server Lavalink Private milikmu di Railway
-const LAVALINK_HOST = process.env.LAVALINK_HOST;
-const LAVALINK_PORT = Number(process.env.LAVALINK_PORT || 2333);
+const LAVALINK_HOST = process.env.LAVALINK_HOST || 'lavalink.v4.lavalink.is-a.dev';
+const LAVALINK_PORT = Number(process.env.LAVALINK_PORT || 443);
 const LAVALINK_PASSWORD = process.env.LAVALINK_PASSWORD || 'youshallnotpass';
-const LAVALINK_SECURE = String(process.env.LAVALINK_SECURE ?? 'false').toLowerCase() === 'true';
-const LAVALINK_ID = process.env.LAVALINK_ID || 'main';
+const LAVALINK_SECURE = String(process.env.LAVALINK_SECURE ?? 'true').toLowerCase() === 'true';
 
 if (!TOKEN) {
     console.error('ERROR: DISCORD_TOKEN tidak ditemukan!');
     process.exit(1);
 }
 
-if (!LAVALINK_HOST) {
-    console.error('ERROR: LAVALINK_HOST tidak ditemukan di Environment Variables!');
-    process.exit(1);
-}
-
-console.log(`[Lavalink Config] Connecting to ${LAVALINK_HOST}:${LAVALINK_PORT} (Secure: ${LAVALINK_SECURE})`);
-
 const lavalink = new LavalinkManager({
     nodes: [{
-        id: LAVALINK_ID,
+        id: process.env.LAVALINK_ID || 'node-freelavalink',
         host: LAVALINK_HOST,
         port: LAVALINK_PORT,
         authorization: LAVALINK_PASSWORD,
         secure: LAVALINK_SECURE,
-        retryAmount: 15,
-        retryDelay: 3000
+        retryAmount: 10,
+        retryDelay: 5000
     }],
     sendToShard: (guildId, payload) => {
         const guild = client.guilds.cache.get(guildId);
@@ -99,12 +89,12 @@ function getTrackId(track) {
     return track?.info?.identifier || null;
 }
 
+// Prefiks default menggunakan spsearch: (Spotify)
 function buildSearchQuery(query) {
     const value = String(query || '').trim();
     if (!value) return '';
     if (/^(https?:\/\/|ytsearch:|ytmsearch:|scsearch:|spsearch:|dzsearch:|amsearch:)/i.test(value)) return value;
-    // Gunakan SoundCloud (scsearch:) agar 100% bebas dari blokir IP YouTube Datacenter
-    return 'scsearch:' + value;
+    return 'spsearch:' + value;
 }
 
 function escapeHtml(value) {
@@ -134,9 +124,9 @@ async function getAutoplayTrack(player, previousTrack) {
     if (!artist) return null;
 
     const queries = [
+        'spsearch:' + artist + ' top tracks',
+        'spsearch:' + artist + ' popular songs',
         'ytsearch:' + artist + ' top tracks',
-        'ytsearch:' + artist + ' popular songs',
-        'ytsearch:' + artist + ' best songs',
         'ytsearch:' + artist
     ];
 
@@ -468,7 +458,7 @@ function renderDashboard() {
         '<input id="volume-slider" type="range" min="0" max="100" value="' + currentVolume + '" step="1">' +
         '</div>' +
         '<form action="/api/play" method="POST" class="play-search">' +
-        '<input name="query" placeholder="Judul / YouTube / Spotify / SoundCloud" required>' +
+        '<input name="query" placeholder="Judul / YouTube / Spotify" required>' +
         '</form>' +
         '<div class="play-buttons">' +
         '<form action="/api/play" method="POST" class="play-submit">' +
@@ -531,6 +521,7 @@ app.post('/api/leave', async (_, res) => {
     res.redirect('/');
 });
 
+// Route /api/play dengan Fallback 2 Tingkat (Spotify -> YouTube)
 app.post('/api/play', async (req, res) => {
     const query = String(req.body.query || '').trim();
     if (!query) return res.redirect('/');
@@ -558,19 +549,28 @@ app.post('/api/play', async (req, res) => {
         }
         if (!player) return res.redirect('/');
 
-        const searchQuery = buildSearchQuery(query);
-        console.log('[Search] ' + searchQuery);
-        const result = await player.search({ query: searchQuery }, client.user);
-        const track = result?.tracks?.[0];
-        console.log('[Search] Result: ' + (track ? getTrackTitle(track) : 'Tidak ada'));
+        let result = null;
+        let searchQuery = buildSearchQuery(query);
 
+        // TAHAP 1: Cari via Spotify
+        console.log('[Search - Stage 1 (Spotify)] ' + searchQuery);
+        result = await player.search({ query: searchQuery }, client.user);
+
+        // TAHAP 2: Fallback ke YouTube jika Spotify tidak ada hasil
+        if (!result || !result.tracks || result.tracks.length === 0) {
+            const ytQuery = 'ytsearch:' + query;
+            console.log('[Search - Stage 2 (YouTube Fallback)] ' + ytQuery);
+            result = await player.search({ query: ytQuery }, client.user);
+        }
+
+        const track = result?.tracks?.[0];
         if (!track) {
-            console.warn('[Search] Tidak ada hasil untuk: ' + query);
+            console.warn('[Search] Lagu tidak ditemukan di Spotify maupun YouTube: ' + query);
             return res.redirect('/');
         }
 
         player.queue.add(track);
-        console.log('[Play] ' + getTrackTitle(track));
+        console.log('[Play] Lagu ditambahkan ke antrean: ' + getTrackTitle(track));
         if (!player.playing && !player.paused) await player.play();
     } catch (err) {
         console.error('[Play/Search Error]:', err?.stack || err?.message || err);
