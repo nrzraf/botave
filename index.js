@@ -20,7 +20,8 @@ const {
     createAudioResource, 
     AudioPlayerStatus,
     VoiceConnectionStatus,
-    entersState
+    entersState,
+    NoSubscriberBehavior
 } = require('@discordjs/voice');
 const ytdl = require('@distube/ytdl-core');
 const play = require('play-dl');
@@ -46,19 +47,31 @@ if (!TOKEN) {
     process.exit(1);
 }
 
-let audioPlayer = createAudioPlayer();
+// Inisialisasi Audio Player
+const audioPlayer = createAudioPlayer({
+    behaviors: {
+        noSubscriber: NoSubscriberBehavior.Play
+    }
+});
+
 let queue = [];
 let isPlaying = false;
 let currentTrack = null;
+let savedVoiceChannelId = ""; // Menyimpan ID VC secara konsisten
 let currentVoiceChannel = null;
 let voiceConnection = null;
 
-// Fungsi Menghubungkan Bot ke Voice Channel Dinamis
+// Menghubungkan ke Voice Channel
 async function connectToChannel(channelId) {
     try {
         const channel = await client.channels.fetch(channelId);
         if (!channel || !channel.isVoice()) {
-            return { success: false, message: 'ID Channel tidak ditemukan atau bukan Voice Channel!' };
+            return { success: false, message: 'Channel tidak ditemukan atau bukan Voice Channel!' };
+        }
+
+        // Putuskan koneksi lama jika berpindah VC
+        if (voiceConnection) {
+            try { voiceConnection.destroy(); } catch (e) {}
         }
 
         voiceConnection = joinVoiceChannel({
@@ -71,9 +84,9 @@ async function connectToChannel(channelId) {
 
         voiceConnection.subscribe(audioPlayer);
         currentVoiceChannel = channel;
+        savedVoiceChannelId = channel.id;
         console.log(`Bot terhubung ke VC: ${channel.name} (${channel.guild.name})`);
 
-        // Penanganan jika bot terputus dari Voice Channel
         voiceConnection.on(VoiceConnectionStatus.Disconnected, async () => {
             try {
                 await Promise.race([
@@ -81,21 +94,21 @@ async function connectToChannel(channelId) {
                     entersState(voiceConnection, VoiceConnectionStatus.Connecting, 5000),
                 ]);
             } catch (error) {
-                console.log("Bot terputus dari VC. Membutuhkan set up ulang VC.");
+                console.log("Bot terputus dari VC.");
                 try { voiceConnection.destroy(); } catch (e) {}
                 currentVoiceChannel = null;
                 voiceConnection = null;
             }
         });
 
-        return { success: true, name: channel.name, guild: channel.guild.name };
+        return { success: true };
     } catch (err) {
-        console.error('Gagal koneksi Voice:', err);
+        console.error('Gagal koneksi Voice:', err.message);
         return { success: false, message: err.message };
     }
 }
 
-// Pemutaran musik menggunakan streamer play-dl
+// Stream Audio dengan Handling Error Anti-Crash
 async function playNext() {
     if (queue.length === 0) {
         isPlaying = false;
@@ -107,30 +120,34 @@ async function playNext() {
     isPlaying = true;
 
     try {
-        const stream = await play.stream(currentTrack.url, {
-            discordPlayerCompatibility: true
-        });
+        let stream;
+
+        // Mengutamakan stream yang aman dari blokir bot YouTube
+        if (currentTrack.url.includes('soundcloud.com')) {
+            stream = await play.stream(currentTrack.url);
+        } else {
+            stream = await play.stream(currentTrack.url, {
+                discordPlayerCompatibility: true,
+                seek: 0,
+                quality: 2
+            });
+        }
 
         const resource = createAudioResource(stream.stream, {
-            inputType: stream.type
+            inputType: stream.type,
+            inlineVolume: false
         });
 
         audioPlayer.play(resource);
         console.log(`Sedang memutar: ${currentTrack.title}`);
     } catch (error) {
-        console.error('Error streaming song via play-dl:', error);
-        // Fallback ke ytdl-core jika play-dl bermasalah
-        try {
-            const stream = await ytdl(currentTrack.url, {
-                filter: 'audioonly',
-                highWaterMark: 1 << 25,
-                quality: 'highestaudio'
-            });
-            const resource = createAudioResource(stream);
-            audioPlayer.play(resource);
-        } catch (ytdlErr) {
-            console.error('Fallback ytdl-core gagal:', ytdlErr);
-            playNext();
+        console.error('Error streaming lagu:', error.message);
+        isPlaying = false;
+        currentTrack = null;
+
+        // Jika terbalik/terblokir, lanjut ke antrean lagu berikutnya
+        if (queue.length > 0) {
+            setTimeout(playNext, 1000);
         }
     }
 }
@@ -139,22 +156,23 @@ audioPlayer.on(AudioPlayerStatus.Idle, () => {
     playNext();
 });
 
+audioPlayer.on('error', (err) => {
+    console.error('Audio Player Error Event:', err.message);
+    playNext();
+});
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// Menangani favicon request
 app.get('/favicon.ico', (req, res) => res.status(204).end());
 
-// ==========================================
-// RENDER HTML CONTROLLER
-// ==========================================
+// Render UI Controller
 function renderDashboard() {
     const queueList = queue.map((song, i) => `<li>${i + 1}. ${song.title}</li>`).join('');
     return `
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Voicecord Web Controller</title>
+            <title>Voicecord Controller</title>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
                 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f1015; color: #e1e1e6; padding: 20px; max-width: 480px; margin: auto; }
@@ -174,10 +192,10 @@ function renderDashboard() {
             <div class="card">
                 <h3>Voice Channel Target</h3>
                 <p style="font-size: 13px; margin: 4px 0 12px 0; color: #a0a0b0;">
-                    Status VC: <strong>${currentVoiceChannel ? `${currentVoiceChannel.name} (${currentVoiceChannel.guild.name})` : '<span style="color:#ed4245;">Belum Terhubung (Set ID Dahulu)</span>'}</strong>
+                    Status VC: <strong>${currentVoiceChannel ? `${currentVoiceChannel.name} (${currentVoiceChannel.guild.name})` : '<span style="color:#ed4245;">Belum Terhubung</span>'}</strong>
                 </p>
                 <form action="/api/connect" method="POST">
-                    <input type="text" name="channelId" placeholder="Masukkan Voice Channel ID" value="${currentVoiceChannel ? currentVoiceChannel.id : ''}" required />
+                    <input type="text" name="channelId" placeholder="Masukkan Voice Channel ID" value="${savedVoiceChannelId}" required />
                     <button type="submit" class="alt">Set / Pindah Voice Channel</button>
                 </form>
             </div>
@@ -186,11 +204,12 @@ function renderDashboard() {
                 <h3>Music Player</h3>
                 <p style="font-size: 13px; margin-bottom: 12px;">
                     <strong>Sedang Diputar:</strong><br>
-                    <span style="color: #5865F2; font-weight: bold;">${currentTrack ? currentTrack.title : 'Tidak ada'}</span>
+                    <span style="color: #5865F2; font-weight: bold;">${currentTrack ? currentTrack.title : 'Tidak ada'}</span><br>
+                    <small style="color:#a0a0b0;">Status: ${audioPlayer.state.status}</small>
                 </p>
 
                 <form action="/api/play" method="POST">
-                    <input type="text" name="query" placeholder="Judul Lagu / URL YouTube" required />
+                    <input type="text" name="query" placeholder="Judul Lagu / URL YouTube / SoundCloud" required />
                     <button type="submit">Play / Add Queue</button>
                 </form>
 
@@ -226,65 +245,105 @@ app.post('/api/play', async (req, res) => {
     const { query } = req.body;
     if (!query) return res.redirect('/');
 
-    // Mencegah pemutaran lagu jika VC belum diset / terputus
     if (!currentVoiceChannel) {
-        return res.send('<script>alert("Voice Channel belum terhubung/terputus. Silakan set Voice Channel ID terlebih dahulu!"); window.location.href="/";</script>');
+        return res.send('<script>alert("Atur Voice Channel ID terlebih dahulu di bagian atas!"); window.location.href="/";</script>');
     }
 
     try {
         let songInfo = {};
-        if (ytdl.validateURL(query)) {
-            const info = await ytdl.getBasicInfo(query);
-            songInfo = { title: info.videoDetails.title, url: info.videoDetails.video_url };
+
+        // 1. Jika input berupa URL
+        if (query.startsWith('http://') || query.startsWith('https://')) {
+            if (play.yt_validate(query) === 'video') {
+                const info = await play.video_info(query);
+                songInfo = { title: info.video_details.title, url: info.video_details.url };
+            } else if (query.includes('soundcloud.com')) {
+                const info = await play.soundcloud(query);
+                songInfo = { title: info.name, url: info.url };
+            }
         } else {
-            const searchResults = await play.search(query, { limit: 1 });
-            if (searchResults && searchResults.length > 0) {
-                songInfo = { title: searchResults[0].title, url: searchResults[0].url };
+            // 2. Pencarian Judul: Coba SoundCloud dulu (Bebas Blokir Bot IP Cloud)
+            try {
+                const scResults = await play.search(query, { source: { soundcloud: 'tracks' }, limit: 1 });
+                if (scResults && scResults.length > 0) {
+                    songInfo = { title: scResults[0].name, url: scResults[0].url };
+                }
+            } catch (scErr) {
+                console.log('Pencarian SoundCloud gagal, mencoba YouTube...');
+            }
+
+            // Fallback ke YouTube
+            if (!songInfo.url) {
+                const ytResults = await play.search(query, { limit: 1 });
+                if (ytResults && ytResults.length > 0) {
+                    songInfo = { title: ytResults[0].title, url: ytResults[0].url };
+                }
             }
         }
 
         if (songInfo.url) {
             queue.push(songInfo);
-            if (!isPlaying) {
+            if (!isPlaying && audioPlayer.state.status !== AudioPlayerStatus.Paused) {
                 playNext();
             }
         }
     } catch (e) {
-        console.error(e);
+        console.error('Error saat menambah lagu:', e.message);
     }
     res.redirect('/');
 });
 
+// Handling Pause Aman
 app.post('/api/pause', (req, res) => {
-    if (audioPlayer.state.status === AudioPlayerStatus.Playing) {
-        audioPlayer.pause();
+    try {
+        if (audioPlayer.state.status === AudioPlayerStatus.Playing) {
+            audioPlayer.pause(true);
+        }
+    } catch (e) {
+        console.error('Error Pause:', e.message);
     }
     res.redirect('/');
 });
 
+// Handling Resume Aman
 app.post('/api/resume', (req, res) => {
-    // Hanya unpause jika audioPlayer sedang dalam status AutoPaused atau Paused
-    if (
-        audioPlayer.state.status === AudioPlayerStatus.Paused || 
-        audioPlayer.state.status === AudioPlayerStatus.AutoPaused
-    ) {
-        audioPlayer.unpause();
+    try {
+        if (
+            audioPlayer.state.status === AudioPlayerStatus.Paused || 
+            audioPlayer.state.status === AudioPlayerStatus.AutoPaused
+        ) {
+            audioPlayer.unpause();
+        }
+    } catch (e) {
+        console.error('Error Resume:', e.message);
     }
     res.redirect('/');
 });
 
 app.post('/api/skip', (req, res) => {
-    audioPlayer.stop();
+    try {
+        audioPlayer.stop();
+    } catch (e) {
+        console.error('Error Skip:', e.message);
+    }
     res.redirect('/');
 });
 
-// Redirect semua route asing ke dashboard utama
 app.get('*', (req, res) => {
     res.send(renderDashboard());
 });
 
 client.on('ready', () => {
     console.log(`Logged in as ${client.user.tag}`);
+});
+
+// Mencegah aplikasi crash total akibat unhandled error dari luar
+process.on('unhandledRejection', (error) => {
+    console.error('Unhandled Rejection Ignored:', error.message || error);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception Ignored:', error.message || error);
 });
 
 app.listen(PORT, '0.0.0.0', () => {
