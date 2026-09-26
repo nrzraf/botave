@@ -23,7 +23,7 @@ const {
 const ytdl = require('@distube/ytdl-core');
 const play = require('play-dl');
 
-// Patch Friend Source Flags Null Error pada discord.js-selfbot-v13
+// Patch Friend Source Flags Null Error
 const ClientUserSettingManager = require('discord.js-selfbot-v13/src/managers/ClientUserSettingManager');
 const originalPatch = ClientUserSettingManager.prototype._patch;
 ClientUserSettingManager.prototype._patch = function (data) {
@@ -34,10 +34,11 @@ ClientUserSettingManager.prototype._patch = function (data) {
 };
 
 const app = express();
-const client = new Client();
+// Menonaktifkan warning update versi di terminal
+const client = new Client({ checkUpdate: false });
 
 const TOKEN = process.env.DISCORD_TOKEN;
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 if (!TOKEN) {
     console.error("ERROR: DISCORD_TOKEN tidak ditemukan di Environment Variables!");
@@ -50,7 +51,6 @@ let isPlaying = false;
 let currentTrack = null;
 let currentVoiceChannel = null;
 
-// Fungsi Menghubungkan Bot ke Voice Channel Dinamis
 async function connectToChannel(channelId) {
     try {
         const channel = await client.channels.fetch(channelId);
@@ -109,12 +109,11 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ==========================================
-// DASHBOARD INTERFACE
+// RENDER HTML CONTROLLER
 // ==========================================
-app.get('/', (req, res) => {
+function renderDashboard() {
     const queueList = queue.map((song, i) => `<li>${i + 1}. ${song.title}</li>`).join('');
-    
-    res.send(`
+    return `
         <!DOCTYPE html>
         <html>
         <head>
@@ -171,12 +170,13 @@ app.get('/', (req, res) => {
             </div>
         </body>
         </html>
-    `);
+    `;
+}
+
+app.get('/', (req, res) => {
+    res.send(renderDashboard());
 });
 
-// ==========================================
-// API ENDPOINTS
-// ==========================================
 app.post('/api/connect', async (req, res) => {
     const { channelId } = req.body;
     if (channelId) {
@@ -200,7 +200,7 @@ app.post('/api/play', async (req, res) => {
             songInfo = { title: info.videoDetails.title, url: info.videoDetails.video_url };
         } else {
             const searchResults = await play.search(query, { limit: 1 });
-            if (searchResults.length > 0) {
+            if (searchResults && searchResults.length > 0) {
                 songInfo = { title: searchResults[0].title, url: searchResults[0].url };
             }
         }
@@ -232,11 +232,15 @@ app.post('/api/skip', (req, res) => {
     res.redirect('/');
 });
 
+// Wildcard Route agar semua path mengarahkan ke Dashboard (Mencegah Railway 404)
+app.get('*', (req, res) => {
+    res.send(renderDashboard());
+});
+
 client.on('ready', () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
 
-// Menentukan server listening ke 0.0.0.0 untuk Railway Proxy Binding
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Web Controller berjalan di port ${PORT}`);
 });
