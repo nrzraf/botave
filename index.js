@@ -107,7 +107,7 @@ async function connectToChannel(channelId) {
     }
 }
 
-// Stream Audio dengan play-dl & ytdl fallback
+// Stream Audio dengan handling fallback
 async function playNext() {
     if (queue.length === 0) {
         isPlaying = false;
@@ -119,17 +119,15 @@ async function playNext() {
     isPlaying = true;
 
     try {
-        console.log(`Mencoba memproses stream: ${currentTrack.title} (${currentTrack.url})`);
+        console.log(`Memproses pemutaran: ${currentTrack.title} (${currentTrack.url})`);
         
         let stream;
         try {
-            // Utama: Gunakan play-dl stream
             stream = await play.stream(currentTrack.url, {
                 discordPlayerCompatibility: true
             });
         } catch (playErr) {
             console.log('play-dl stream gagal, mencoba fallback ytdl-core...', playErr.message);
-            // Fallback: Gunakan ytdl-core
             const ytdlStream = ytdl(currentTrack.url, {
                 filter: 'audioonly',
                 highWaterMark: 1 << 25,
@@ -212,7 +210,7 @@ function renderDashboard() {
                 </p>
 
                 <form action="/api/play" method="POST">
-                    <input type="text" name="query" placeholder="Judul Lagu / URL YouTube" required />
+                    <input type="text" name="query" placeholder="Judul Lagu / Link Spotify / Link YouTube" required />
                     <button type="submit">Play / Add Queue</button>
                 </form>
 
@@ -253,31 +251,50 @@ app.post('/api/play', async (req, res) => {
     }
 
     try {
+        let searchQuery = query.trim();
         let songInfo = {};
 
-        // Jika input berupa Link URL YouTube langsung
-        if (query.startsWith('http://') || query.startsWith('https://')) {
-            if (ytdl.validateURL(query)) {
-                const info = await ytdl.getBasicInfo(query);
+        // 1. CEK LINK SPOTIFY (Ambil Metadata Spotify -> Cari Stream YouTube)
+        if (searchQuery.includes('spotify.com/track/')) {
+            try {
+                if (play.is_expired()) {
+                    await play.refreshToken();
+                }
+                const spotifyData = await play.spotify(searchQuery);
+                searchQuery = `${spotifyData.name} ${spotifyData.artists.map(a => a.name).join(' ')}`;
+                console.log(`Link Spotify terdeteksi! Mengubah query menjadi: "${searchQuery}"`);
+            } catch (spErr) {
+                console.log('Gagal membaca metadata Spotify, memproses sebagai query biasa...');
+            }
+        }
+
+        // 2. CEK LINK YOUTUBE LANGSUNG
+        if (searchQuery.startsWith('http://') || searchQuery.startsWith('https://')) {
+            if (ytdl.validateURL(searchQuery)) {
+                const info = await ytdl.getBasicInfo(searchQuery);
                 songInfo = { title: info.videoDetails.title, url: info.videoDetails.video_url };
             } else {
-                const info = await play.video_info(query);
+                const info = await play.video_info(searchQuery);
                 songInfo = { title: info.video_details.title, url: info.video_details.url };
             }
         } else {
-            // Pencarian Judul Lagu via play.search YouTube
-            const ytResults = await play.search(query, { limit: 1, source: { youtube: 'video' } });
+            // 3. PENCARIAN JUDUL TEKS VIA YOUTUBE
+            const ytResults = await play.search(searchQuery, { limit: 1, source: { youtube: 'video' } });
             if (ytResults && ytResults.length > 0) {
                 const video = ytResults[0];
+                const videoUrl = video.url && video.url.startsWith('http') 
+                    ? video.url 
+                    : `https://www.youtube.com/watch?v=${video.id}`;
+                
                 songInfo = { 
                     title: video.title, 
-                    url: video.url || `https://www.youtube.com/watch?v=${video.id}` 
+                    url: videoUrl 
                 };
             }
         }
 
         if (songInfo.url) {
-            console.log(`Lagu ditemukan: ${songInfo.title} -> ${songInfo.url}`);
+            console.log(`Lagu berhasil ditambahkan: ${songInfo.title} (${songInfo.url})`);
             queue.push(songInfo);
             if (!isPlaying && audioPlayer.state.status !== AudioPlayerStatus.Paused) {
                 playNext();
