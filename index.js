@@ -1,4 +1,3 @@
-js
 const express = require('express');
 const { Client } = require('discord.js-selfbot-v13');
 const { LavalinkManager } = require('lavalink-client');
