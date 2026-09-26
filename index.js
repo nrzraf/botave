@@ -18,12 +18,14 @@ const {
     joinVoiceChannel, 
     createAudioPlayer, 
     createAudioResource, 
-    AudioPlayerStatus 
+    AudioPlayerStatus,
+    VoiceConnectionStatus,
+    entersState
 } = require('@discordjs/voice');
 const ytdl = require('@distube/ytdl-core');
 const play = require('play-dl');
 
-// Patch Friend Source Flags Null Error
+// Patch Friend Source Flags Null Error pada discord.js-selfbot-v13
 const ClientUserSettingManager = require('discord.js-selfbot-v13/src/managers/ClientUserSettingManager');
 const originalPatch = ClientUserSettingManager.prototype._patch;
 ClientUserSettingManager.prototype._patch = function (data) {
@@ -34,18 +36,10 @@ ClientUserSettingManager.prototype._patch = function (data) {
 };
 
 const app = express();
-// Menonaktifkan warning update versi di terminal
 const client = new Client({ checkUpdate: false });
 
 const TOKEN = process.env.DISCORD_TOKEN;
-// Mengunci PORT ke 3000 jika process.env.PORT bernilai undefined
 const PORT = process.env.PORT || 3000;
-
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Menangani request /favicon.ico agar tidak memicu 502/404
-app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 if (!TOKEN) {
     console.error("ERROR: DISCORD_TOKEN tidak ditemukan di Environment Variables!");
@@ -57,7 +51,9 @@ let queue = [];
 let isPlaying = false;
 let currentTrack = null;
 let currentVoiceChannel = null;
+let voiceConnection = null;
 
+// Fungsi Menghubungkan Bot ke Voice Channel Dinamis
 async function connectToChannel(channelId) {
     try {
         const channel = await client.channels.fetch(channelId);
@@ -65,7 +61,7 @@ async function connectToChannel(channelId) {
             return { success: false, message: 'ID Channel tidak ditemukan atau bukan Voice Channel!' };
         }
 
-        const connection = joinVoiceChannel({
+        voiceConnection = joinVoiceChannel({
             channelId: channel.id,
             guildId: channel.guild.id,
             adapterCreator: channel.guild.voiceAdapterCreator,
@@ -73,9 +69,25 @@ async function connectToChannel(channelId) {
             selfDeaf: false
         });
 
-        connection.subscribe(audioPlayer);
+        voiceConnection.subscribe(audioPlayer);
         currentVoiceChannel = channel;
         console.log(`Bot terhubung ke VC: ${channel.name} (${channel.guild.name})`);
+
+        // Penanganan jika bot terputus dari Voice Channel
+        voiceConnection.on(VoiceConnectionStatus.Disconnected, async () => {
+            try {
+                await Promise.race([
+                    entersState(voiceConnection, VoiceConnectionStatus.Signalling, 5000),
+                    entersState(voiceConnection, VoiceConnectionStatus.Connecting, 5000),
+                ]);
+            } catch (error) {
+                console.log("Bot terputus dari VC. Membutuhkan set up ulang VC.");
+                try { voiceConnection.destroy(); } catch (e) {}
+                currentVoiceChannel = null;
+                voiceConnection = null;
+            }
+        });
+
         return { success: true, name: channel.name, guild: channel.guild.name };
     } catch (err) {
         console.error('Gagal koneksi Voice:', err);
@@ -83,6 +95,7 @@ async function connectToChannel(channelId) {
     }
 }
 
+// Pemutaran musik menggunakan streamer play-dl
 async function playNext() {
     if (queue.length === 0) {
         isPlaying = false;
@@ -94,17 +107,31 @@ async function playNext() {
     isPlaying = true;
 
     try {
-        const stream = await ytdl(currentTrack.url, {
-            filter: 'audioonly',
-            highWaterMark: 1 << 25,
-            quality: 'highestaudio'
+        const stream = await play.stream(currentTrack.url, {
+            discordPlayerCompatibility: true
         });
 
-        const resource = createAudioResource(stream);
+        const resource = createAudioResource(stream.stream, {
+            inputType: stream.type
+        });
+
         audioPlayer.play(resource);
+        console.log(`Sedang memutar: ${currentTrack.title}`);
     } catch (error) {
-        console.error('Error stream:', error);
-        playNext();
+        console.error('Error streaming song via play-dl:', error);
+        // Fallback ke ytdl-core jika play-dl bermasalah
+        try {
+            const stream = await ytdl(currentTrack.url, {
+                filter: 'audioonly',
+                highWaterMark: 1 << 25,
+                quality: 'highestaudio'
+            });
+            const resource = createAudioResource(stream);
+            audioPlayer.play(resource);
+        } catch (ytdlErr) {
+            console.error('Fallback ytdl-core gagal:', ytdlErr);
+            playNext();
+        }
     }
 }
 
@@ -114,6 +141,9 @@ audioPlayer.on(AudioPlayerStatus.Idle, () => {
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Menangani favicon request
+app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 // ==========================================
 // RENDER HTML CONTROLLER
@@ -144,7 +174,7 @@ function renderDashboard() {
             <div class="card">
                 <h3>Voice Channel Target</h3>
                 <p style="font-size: 13px; margin: 4px 0 12px 0; color: #a0a0b0;">
-                    Status VC: <strong>${currentVoiceChannel ? `${currentVoiceChannel.name} (${currentVoiceChannel.guild.name})` : 'Belum Terhubung'}</strong>
+                    Status VC: <strong>${currentVoiceChannel ? `${currentVoiceChannel.name} (${currentVoiceChannel.guild.name})` : '<span style="color:#ed4245;">Belum Terhubung (Set ID Dahulu)</span>'}</strong>
                 </p>
                 <form action="/api/connect" method="POST">
                     <input type="text" name="channelId" placeholder="Masukkan Voice Channel ID" value="${currentVoiceChannel ? currentVoiceChannel.id : ''}" required />
@@ -196,8 +226,9 @@ app.post('/api/play', async (req, res) => {
     const { query } = req.body;
     if (!query) return res.redirect('/');
 
+    // Mencegah pemutaran lagu jika VC belum diset / terputus
     if (!currentVoiceChannel) {
-        return res.send('<script>alert("Atur Voice Channel ID terlebih dahulu!"); window.location.href="/";</script>');
+        return res.send('<script>alert("Voice Channel belum terhubung/terputus. Silakan set Voice Channel ID terlebih dahulu!"); window.location.href="/";</script>');
     }
 
     try {
@@ -225,12 +256,20 @@ app.post('/api/play', async (req, res) => {
 });
 
 app.post('/api/pause', (req, res) => {
-    audioPlayer.pause();
+    if (audioPlayer.state.status === AudioPlayerStatus.Playing) {
+        audioPlayer.pause();
+    }
     res.redirect('/');
 });
 
 app.post('/api/resume', (req, res) => {
-    audioPlayer.unpause();
+    // Hanya unpause jika audioPlayer sedang dalam status AutoPaused atau Paused
+    if (
+        audioPlayer.state.status === AudioPlayerStatus.Paused || 
+        audioPlayer.state.status === AudioPlayerStatus.AutoPaused
+    ) {
+        audioPlayer.unpause();
+    }
     res.redirect('/');
 });
 
@@ -239,7 +278,7 @@ app.post('/api/skip', (req, res) => {
     res.redirect('/');
 });
 
-// Wildcard Route agar semua path mengarahkan ke Dashboard (Mencegah Railway 404)
+// Redirect semua route asing ke dashboard utama
 app.get('*', (req, res) => {
     res.send(renderDashboard());
 });
