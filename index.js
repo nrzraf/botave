@@ -43,7 +43,7 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 3000;
 
 if (!TOKEN) {
-    console.error("ERROR: DISCORD_TOKEN tidak ditemukan di Environment Variables!");
+    console.error("ERROR: DISCORD_TOKEN tidak ditemukan!");
     process.exit(1);
 }
 
@@ -57,7 +57,7 @@ const audioPlayer = createAudioPlayer({
 let queue = [];
 let isPlaying = false;
 let currentTrack = null;
-let savedVoiceChannelId = ""; // Menyimpan ID VC secara konsisten
+let savedVoiceChannelId = "";
 let currentVoiceChannel = null;
 let voiceConnection = null;
 
@@ -69,7 +69,6 @@ async function connectToChannel(channelId) {
             return { success: false, message: 'Channel tidak ditemukan atau bukan Voice Channel!' };
         }
 
-        // Putuskan koneksi lama jika berpindah VC
         if (voiceConnection) {
             try { voiceConnection.destroy(); } catch (e) {}
         }
@@ -108,7 +107,7 @@ async function connectToChannel(channelId) {
     }
 }
 
-// Stream Audio dengan Handling Error Anti-Crash
+// Stream Audio dengan play-dl & ytdl fallback
 async function playNext() {
     if (queue.length === 0) {
         isPlaying = false;
@@ -120,17 +119,23 @@ async function playNext() {
     isPlaying = true;
 
     try {
+        console.log(`Mencoba memproses stream: ${currentTrack.title} (${currentTrack.url})`);
+        
         let stream;
-
-        // Mengutamakan stream yang aman dari blokir bot YouTube
-        if (currentTrack.url.includes('soundcloud.com')) {
-            stream = await play.stream(currentTrack.url);
-        } else {
+        try {
+            // Utama: Gunakan play-dl stream
             stream = await play.stream(currentTrack.url, {
-                discordPlayerCompatibility: true,
-                seek: 0,
-                quality: 2
+                discordPlayerCompatibility: true
             });
+        } catch (playErr) {
+            console.log('play-dl stream gagal, mencoba fallback ytdl-core...', playErr.message);
+            // Fallback: Gunakan ytdl-core
+            const ytdlStream = ytdl(currentTrack.url, {
+                filter: 'audioonly',
+                highWaterMark: 1 << 25,
+                quality: 'highestaudio'
+            });
+            stream = { stream: ytdlStream, type: 'arbitrary' };
         }
 
         const resource = createAudioResource(stream.stream, {
@@ -141,11 +146,10 @@ async function playNext() {
         audioPlayer.play(resource);
         console.log(`Sedang memutar: ${currentTrack.title}`);
     } catch (error) {
-        console.error('Error streaming lagu:', error.message);
+        console.error('Gagal memutar lagu:', error.message);
         isPlaying = false;
         currentTrack = null;
 
-        // Jika terbalik/terblokir, lanjut ke antrean lagu berikutnya
         if (queue.length > 0) {
             setTimeout(playNext, 1000);
         }
@@ -165,7 +169,6 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.get('/favicon.ico', (req, res) => res.status(204).end());
 
-// Render UI Controller
 function renderDashboard() {
     const queueList = queue.map((song, i) => `<li>${i + 1}. ${song.title}</li>`).join('');
     return `
@@ -209,7 +212,7 @@ function renderDashboard() {
                 </p>
 
                 <form action="/api/play" method="POST">
-                    <input type="text" name="query" placeholder="Judul Lagu / URL YouTube / SoundCloud" required />
+                    <input type="text" name="query" placeholder="Judul Lagu / URL YouTube" required />
                     <button type="submit">Play / Add Queue</button>
                 </form>
 
@@ -246,54 +249,48 @@ app.post('/api/play', async (req, res) => {
     if (!query) return res.redirect('/');
 
     if (!currentVoiceChannel) {
-        return res.send('<script>alert("Atur Voice Channel ID terlebih dahulu di bagian atas!"); window.location.href="/";</script>');
+        return res.send('<script>alert("Atur Voice Channel ID terlebih dahulu!"); window.location.href="/";</script>');
     }
 
     try {
         let songInfo = {};
 
-        // 1. Jika input berupa URL
+        // Jika input berupa Link URL YouTube langsung
         if (query.startsWith('http://') || query.startsWith('https://')) {
-            if (play.yt_validate(query) === 'video') {
+            if (ytdl.validateURL(query)) {
+                const info = await ytdl.getBasicInfo(query);
+                songInfo = { title: info.videoDetails.title, url: info.videoDetails.video_url };
+            } else {
                 const info = await play.video_info(query);
                 songInfo = { title: info.video_details.title, url: info.video_details.url };
-            } else if (query.includes('soundcloud.com')) {
-                const info = await play.soundcloud(query);
-                songInfo = { title: info.name, url: info.url };
             }
         } else {
-            // 2. Pencarian Judul: Coba SoundCloud dulu (Bebas Blokir Bot IP Cloud)
-            try {
-                const scResults = await play.search(query, { source: { soundcloud: 'tracks' }, limit: 1 });
-                if (scResults && scResults.length > 0) {
-                    songInfo = { title: scResults[0].name, url: scResults[0].url };
-                }
-            } catch (scErr) {
-                console.log('Pencarian SoundCloud gagal, mencoba YouTube...');
-            }
-
-            // Fallback ke YouTube
-            if (!songInfo.url) {
-                const ytResults = await play.search(query, { limit: 1 });
-                if (ytResults && ytResults.length > 0) {
-                    songInfo = { title: ytResults[0].title, url: ytResults[0].url };
-                }
+            // Pencarian Judul Lagu via play.search YouTube
+            const ytResults = await play.search(query, { limit: 1, source: { youtube: 'video' } });
+            if (ytResults && ytResults.length > 0) {
+                const video = ytResults[0];
+                songInfo = { 
+                    title: video.title, 
+                    url: video.url || `https://www.youtube.com/watch?v=${video.id}` 
+                };
             }
         }
 
         if (songInfo.url) {
+            console.log(`Lagu ditemukan: ${songInfo.title} -> ${songInfo.url}`);
             queue.push(songInfo);
             if (!isPlaying && audioPlayer.state.status !== AudioPlayerStatus.Paused) {
                 playNext();
             }
+        } else {
+            console.log('Lagu tidak ditemukan.');
         }
     } catch (e) {
-        console.error('Error saat menambah lagu:', e.message);
+        console.error('Error saat mencari/menambah lagu:', e.message);
     }
     res.redirect('/');
 });
 
-// Handling Pause Aman
 app.post('/api/pause', (req, res) => {
     try {
         if (audioPlayer.state.status === AudioPlayerStatus.Playing) {
@@ -305,7 +302,6 @@ app.post('/api/pause', (req, res) => {
     res.redirect('/');
 });
 
-// Handling Resume Aman
 app.post('/api/resume', (req, res) => {
     try {
         if (
@@ -337,7 +333,6 @@ client.on('ready', () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
 
-// Mencegah aplikasi crash total akibat unhandled error dari luar
 process.on('unhandledRejection', (error) => {
     console.error('Unhandled Rejection Ignored:', error.message || error);
 });
